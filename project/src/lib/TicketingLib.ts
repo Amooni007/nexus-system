@@ -283,3 +283,10 @@ export function buildWhatsAppTicketMessage(params: {
     `_Powered by Nexus Event System_`
   );
 }
+export function isValidKEPhone(phone: string): boolean {
+  const cleaned = phone.replace(/\D/g, '');
+  return (
+    /^(07|01)\d{8}$/.test(cleaned) ||
+    /^254(7|1)\d{8}$/.test(cleaned)
+  );
+}
