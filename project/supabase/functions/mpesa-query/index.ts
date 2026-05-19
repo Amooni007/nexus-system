@@ -4,11 +4,12 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import {
-  getMpesaConfig, queryStkStatus, corsHeaders, corsResponse, corsError,
+  getMpesaConfig, queryStkStatus, getCorsHeaders, corsResponse, corsError,
 } from '../_shared/mpesa.ts';
 
 serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+  const corsH = getCorsHeaders(req);
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsH });
 
   try {
     const { orderId } = await req.json();

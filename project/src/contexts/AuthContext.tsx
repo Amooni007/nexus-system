@@ -79,31 +79,65 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     mountedRef.current = true;
 
-    supabase.auth.getSession().then(async ({ data: { session: initialSession } }) => {
-      if (!mountedRef.current) return;
-      setSession(initialSession);
-      setUser(initialSession?.user ?? null);
-      if (initialSession?.user) await fetchProfile(initialSession.user.id);
-      if (mountedRef.current) setLoading(false);
-    });
+    // ── SECURITY FIX: Detect recovery session from URL hash BEFORE getSession ──
+    // When a user clicks a password reset link, Supabase appends:
+    //   #access_token=...&type=recovery
+    // to the URL. We must detect this FIRST before calling getSession(),
+    // because getSession() would otherwise establish a full authenticated
+    // session, letting the user bypass the password reset form entirely.
+    const hashParams = new URLSearchParams(
+      window.location.hash.replace('#', '?')
+    );
+    const isRecoveryFromUrl = hashParams.get('type') === 'recovery';
+
+    if (isRecoveryFromUrl) {
+      // Mark as recovery immediately — don't fetch profile or set full session.
+      // The onAuthStateChange PASSWORD_RECOVERY event will fire shortly after
+      // and provide the session needed for supabase.auth.updateUser() to work.
+      setIsRecoverySession(true);
+      setLoading(false);
+      // Don't call getSession() — fall through to onAuthStateChange only
+    } else {
+      // Normal startup: check for existing session and load profile
+      supabase.auth.getSession().then(async ({ data: { session: initialSession } }) => {
+        if (!mountedRef.current) return;
+        setSession(initialSession);
+        setUser(initialSession?.user ?? null);
+        if (initialSession?.user) await fetchProfile(initialSession.user.id);
+        if (mountedRef.current) setLoading(false);
+      });
+    }
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, newSession) => {
       if (event === 'INITIAL_SESSION') return;
       if (!mountedRef.current) return;
 
-      // PASSWORD_RECOVERY: user clicked a reset link.
-      // Set the session so ResetPasswordPage can call updateUser(),
-      // but do NOT fetch profile or set loading=false — this would
-      // trigger LoginPage/ProtectedRoute redirects before the reset form shows.
       if (event === 'PASSWORD_RECOVERY') {
+        // Recovery token exchanged — session exists for updateUser() only.
+        // Do NOT fetch profile or allow navigation to protected routes.
         setIsRecoverySession(true);
         setSession(newSession);
         setUser(newSession?.user ?? null);
+        // Profile deliberately not fetched — user has not logged in normally
         setLoading(false);
-        return; // skip profile fetch — ResetPasswordPage handles this session
+        return;
       }
 
-      // Clear recovery flag on any other auth event
+      if (event === 'USER_UPDATED') {
+        // Password was just changed via updateUser().
+        // Sign out completely so user must log in fresh with new password.
+        // This prevents the recovery session from becoming a full session.
+        if (mountedRef.current) {
+          setIsRecoverySession(false);
+          setSession(null);
+          setUser(null);
+          setProfile(null);
+          setLoading(false);
+        }
+        return;
+      }
+
+      // All other events (SIGNED_IN from normal login, SIGNED_OUT, TOKEN_REFRESHED)
       setIsRecoverySession(false);
       setSession(newSession);
       setUser(newSession?.user ?? null);

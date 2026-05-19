@@ -9,10 +9,15 @@ interface ProtectedRouteProps {
 }
 
 export default function ProtectedRoute({ children, allowedRoles }: ProtectedRouteProps) {
-  const { user, profile, loading, profileError, mustChangePassword } = useAuth();
+  const { user, profile, loading, profileError, mustChangePassword, isRecoverySession } = useAuth();
   const location = useLocation();
 
   if (loading) return <LoadingSpinner fullScreen />;
+
+  // Recovery sessions must ONLY access /reset-password.
+  // Block them from all protected routes to prevent session fixation.
+  if (isRecoverySession) return <Navigate to="/reset-password" replace />;
+
   if (!user) return <Navigate to="/login" replace />;
 
   if (profileError) {

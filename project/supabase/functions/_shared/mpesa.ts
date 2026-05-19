@@ -92,11 +92,20 @@ export async function initiateStkPush(params: STKPushParams): Promise<STKPushRes
   const password = generatePassword(config.shortcode, config.passkey, timestamp);
   const formattedPhone = formatPhone(phone);
 
+  // TransactionType depends on shortcode type:
+  // 'CustomerPayBillOnline'  → Paybill (Pay Bill)
+  // 'CustomerBuyGoodsOnline' → Till (Buy Goods)
+  // Set MPESA_SHORTCODE_TYPE=till or MPESA_SHORTCODE_TYPE=paybill in secrets
+  const shortcodeType = Deno.env.get('MPESA_SHORTCODE_TYPE') || 'paybill';
+  const transactionType = shortcodeType === 'till'
+    ? 'CustomerBuyGoodsOnline'
+    : 'CustomerPayBillOnline';
+
   const body = {
     BusinessShortCode: config.shortcode,
     Password: password,
     Timestamp: timestamp,
-    TransactionType: 'CustomerPayBillOnline',
+    TransactionType: transactionType,
     Amount: Math.ceil(amount),   // M-Pesa requires integer
     PartyA: formattedPhone,
     PartyB: config.shortcode,
@@ -152,19 +161,42 @@ export async function queryStkStatus(
 }
 
 // ── CORS headers for all edge functions ──────────────────────────────────────
+// Restricted to production domain only — prevents any other website from
+// calling your edge functions using your anon key.
+const ALLOWED_ORIGINS = [
+  'https://nexus-system.pages.dev',
+  'http://localhost:5173',
+  'http://localhost:4173',
+];
+
+export function getCorsHeaders(req: Request) {
+  const origin = req.headers.get('origin') || '';
+  const allowed = ALLOWED_ORIGINS.includes(origin)
+    ? origin
+    : ALLOWED_ORIGINS[0]; // default to production if unknown
+  return {
+    'Access-Control-Allow-Origin':  allowed,
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+    'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+    'Vary': 'Origin',
+  };
+}
+
+// Backward-compatible alias used by existing functions
 export const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Origin':  'https://nexus-system.pages.dev',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
   'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
 };
 
-export function corsResponse(body: unknown, status = 200) {
+export function corsResponse(body: unknown, status = 200, req?: Request) {
+  const headers = req ? getCorsHeaders(req) : corsHeaders;
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...headers, 'Content-Type': 'application/json' },
   });
 }
 
-export function corsError(message: string, status = 400) {
-  return corsResponse({ error: message }, status);
+export function corsError(message: string, status = 400, req?: Request) {
+  return corsResponse({ error: message }, status, req);
 }
