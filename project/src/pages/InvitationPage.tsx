@@ -1,74 +1,96 @@
+// src/pages/InvitationPage.tsx
+//
+// PHASE 2 — SECURE INVITATION PAGE
+//
+// Route changed from: /invitation/:guestId  (exposes guest UUID)
+// Route changed to:   /invite/:token        (256-bit entropy token)
+//
+// This page calls the validate-invite Edge Function which:
+//   - Looks up the token hash in invitation_tokens table
+//   - Returns ONLY safe fields: guest name, event info, QR code
+//   - Never returns guest UUID, phone, email, or payment data
+//
+// The old /invitation/:guestId route is kept as a redirect for backward compat.
+
 import { useEffect, useState, useRef } from 'react';
 import { useParams } from 'react-router-dom';
-import { QrCode, Download, MessageCircle } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import { QrCode, Download, MessageCircle, AlertCircle } from 'lucide-react';
 import { generateQRDataURL } from '../lib/qr';
 import { downloadInvitationAsPDF } from '../lib/pdf';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import InvitationCard from '../components/InvitationCard';
 import { format } from 'date-fns';
-import type { Guest, Event, QRCode } from '../types';
+
+const SUPABASE_URL     = import.meta.env.VITE_SUPABASE_URL as string;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+
+interface InviteData {
+  guest:    { name: string; status: string };
+  event:    { name: string; date: string; location: string; description: string };
+  qr:       { code: string; status: string; used_at: string | null } | null;
+  template: any | null;
+}
+
+type PageState = 'loading' | 'valid' | 'invalid' | 'expired' | 'revoked' | 'inactive';
 
 export default function InvitationPage() {
-  const [template, setTemplate] = useState<any>(null);
-  const { guestId } = useParams<{ guestId: string }>();
-  const [guest, setGuest] = useState<Guest | null>(null);
-  const [event, setEvent] = useState<Event | null>(null);
-  const [qrCode, setQrCode] = useState<QRCode | null>(null);
-  const [qrImage, setQrImage] = useState<string>('');
-  const [loading, setLoading] = useState(true);
-  const [notFound, setNotFound] = useState(false);
+  const { token } = useParams<{ token: string }>();
+  const [state,         setState]         = useState<PageState>('loading');
+  const [inviteData,    setInviteData]    = useState<InviteData | null>(null);
+  const [qrImage,       setQrImage]       = useState('');
   const [downloadingPDF, setDownloadingPDF] = useState(false);
+  const [invalidReason, setInvalidReason] = useState('');
   const invRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    if (!token) { setState('invalid'); setInvalidReason('No token provided'); return; }
+
     async function load() {
-      const { data: guestData } = await supabase
-        .from('guests')
-        .select('*')
-        .eq('id', guestId!)
-        .maybeSingle();
+      try {
+        const res = await fetch(
+          `${SUPABASE_URL}/functions/v1/validate-invite?token=${encodeURIComponent(token)}`,
+          {
+            headers: {
+              // Anon key is fine here — the Edge Function uses service role internally
+              // The anon key just allows calling the function
+              'apikey': SUPABASE_ANON_KEY,
+            },
+          }
+        );
 
-      if (!guestData) { setNotFound(true); setLoading(false); return; }
-      setGuest(guestData);
+        const data = await res.json();
 
-      const [eventRes, qrRes] = await Promise.all([
-        supabase.from('events').select('*').eq('id', guestData.event_id).maybeSingle(),
-        supabase.from('qr_codes').select('*').eq('guest_id', guestId!).maybeSingle(),
-      ]);
+        if (!res.ok || !data.valid) {
+          const reason = data.reason || 'invalid';
+          if (reason === 'expired')       setState('expired');
+          else if (reason === 'revoked')  setState('revoked');
+          else if (reason === 'guest_inactive') setState('inactive');
+          else { setState('invalid'); setInvalidReason(data.reason || 'Unknown error'); }
+          return;
+        }
 
-      setEvent(eventRes.data);
-      setQrCode(qrRes.data);
+        setInviteData(data);
 
-// Check if the event has a template assigned to it
-if (eventRes.data?.template_id) {
-  const { data: templateData } = await supabase
-    .from('invitation_templates')
-    .select('*')
-    .eq('id', eventRes.data.template_id)
-    .maybeSingle();
+        if (data.qr?.code) {
+          const img = await generateQRDataURL(data.qr.code);
+          setQrImage(img);
+        }
 
-  // Save the template data so we can use it to change colors/fonts
-  if (templateData) {
-    setTemplate(templateData);
-  }
-}
-
-
-      if (qrRes.data) {
-        const img = await generateQRDataURL(qrRes.data.code);
-        setQrImage(img);
+        setState('valid');
+      } catch (err) {
+        setState('invalid');
+        setInvalidReason('Failed to load invitation');
       }
-
-      setLoading(false);
     }
+
     load();
-  }, [guestId]);
+  }, [token]);
 
   async function handleDownloadPDF() {
     setDownloadingPDF(true);
     try {
-      await downloadInvitationAsPDF('public-invitation-card', `invitation-${guest?.name.replace(/\s+/g, '-')}`);
+      const name = inviteData?.guest?.name?.replace(/\s+/g, '-') || 'guest';
+      await downloadInvitationAsPDF('public-invitation-card', `invitation-${name}`);
     } catch {
       alert('Failed to generate PDF');
     }
@@ -76,19 +98,19 @@ if (eventRes.data?.template_id) {
   }
 
   function handleWhatsApp() {
-    if (!guest || !event) return;
+    if (!inviteData) return;
+    const { guest, event } = inviteData;
     const inviteLink = window.location.href;
     const message = encodeURIComponent(
-      `Hi ${guest.name}!\n\nYou're invited to *${event.name}*!\n\n📅 ${format(new Date(event.date), 'EEEE, MMMM d, yyyy · h:mm a')}\n📍 ${event.location}\n\nView your invitation & QR code here:\n${inviteLink}`
+      `Hi ${guest.name}!\n\nYou're invited to *${event.name}*!\n\n` +
+      `📅 ${format(new Date(event.date), 'EEEE, MMMM d, yyyy · h:mm a')}\n` +
+      `📍 ${event.location}\n\nView your invitation & QR code here:\n${inviteLink}`
     );
-    const phone = guest.phone?.replace(/\D/g, '');
-    const url = phone ? `https://wa.me/${phone}?text=${message}` : `https://wa.me/?text=${message}`;
-    window.open(url, '_blank');
+    window.open(`https://wa.me/?text=${message}`, '_blank');
   }
-  console.log("DEBUG - Template Data:", template);
 
-
-  if (loading) {
+  // ── Loading ────────────────────────────────────────────────────────────────
+  if (state === 'loading') {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center">
         <LoadingSpinner size="lg" />
@@ -96,26 +118,30 @@ if (eventRes.data?.template_id) {
     );
   }
 
-  if (notFound || !guest || !event) {
+  // ── Error states ───────────────────────────────────────────────────────────
+  const errorConfig: Record<string, { title: string; message: string }> = {
+    invalid:  { title: 'Invitation Not Found',  message: 'This invitation link may be invalid.' },
+    expired:  { title: 'Invitation Expired',    message: 'This invitation link has expired. Please contact the event organiser for a new link.' },
+    revoked:  { title: 'Invitation Revoked',    message: 'This invitation has been revoked. Please contact the event organiser.' },
+    inactive: { title: 'Access Revoked',        message: 'This invitation is no longer valid.' },
+  };
+
+  if (state !== 'valid') {
+    const cfg = errorConfig[state] || errorConfig.invalid;
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center gap-4">
-        <QrCode size={40} className="text-slate-700" />
-        <h1 className="text-xl font-semibold text-slate-300">Invitation Not Found</h1>
-        <p className="text-slate-500 text-sm">This invitation link may be invalid or expired.</p>
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center gap-4 px-4">
+        <div className="w-12 h-12 rounded-2xl bg-red-500/10 flex items-center justify-center">
+          <AlertCircle size={24} className="text-red-400" />
+        </div>
+        <h1 className="text-xl font-semibold text-slate-300 text-center">{cfg.title}</h1>
+        <p className="text-slate-500 text-sm text-center max-w-xs">{cfg.message}</p>
       </div>
     );
   }
 
-  if (guest.status === 'inactive') {
-    return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center gap-4">
-        <QrCode size={40} className="text-slate-700" />
-        <h1 className="text-xl font-semibold text-slate-300">Access Revoked</h1>
-        <p className="text-slate-500 text-sm">This invitation is no longer valid.</p>
-      </div>
-    );
-  }
+  const { guest, event, qr, template } = inviteData!;
 
+  // ── Valid invitation ───────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 flex flex-col items-center justify-center p-4">
       <div className="w-full max-w-md">
@@ -127,28 +153,26 @@ if (eventRes.data?.template_id) {
         </div>
 
         <div id="public-invitation-card" ref={invRef} className="w-full">
-  <InvitationCard 
-    guest={guest} 
-    event={event} 
-    template={template} 
-    qrImage={qrImage} 
-    qrCode={qrCode} 
-  />
-</div>
+          <InvitationCard
+            guest={{ name: guest.name, status: guest.status } as any}
+            event={{ name: event.name, date: event.date, location: event.location, description: event.description } as any}
+            template={template}
+            qrImage={qrImage}
+            qrCode={qr ? { code: qr.code, status: qr.status } as any : null}
+          />
+        </div>
 
         <div className="flex gap-3 mt-6">
           <button
             onClick={handleWhatsApp}
-            className="flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium transition-colors"
-          >
+            className="flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium transition-colors">
             <MessageCircle size={16} />
             Share on WhatsApp
           </button>
           <button
             onClick={handleDownloadPDF}
             disabled={downloadingPDF}
-            className="flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-medium transition-colors border border-slate-700 disabled:opacity-50"
-          >
+            className="flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-medium transition-colors border border-slate-700 disabled:opacity-50">
             <Download size={16} />
             {downloadingPDF ? 'Generating...' : 'Download PDF'}
           </button>
