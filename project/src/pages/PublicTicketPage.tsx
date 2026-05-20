@@ -271,13 +271,14 @@ export default function PublicTicketPage() {
         setTxErrors({ txCode: 'This code has already been used. Each M-Pesa code can only be submitted once.' });
         return;
       }
-      const { error } = await supabase.from('ticket_orders').update({
-        mpesa_transaction_code: code,
-        payment_status:         'pending_verification',
-        payment_mode:           'host_manual',
-        submitted_at:           new Date().toISOString(),
-      }).eq('id', order.id);
+      // SERVER-SIDE: submit_manual_payment RPC validates code uniqueness,
+      // format, and order status before updating. Browser cannot bypass these checks.
+      const { data: rpcData, error } = await supabase.rpc('submit_manual_payment', {
+        p_order_id: order.id,
+        p_tx_code:  code,
+      });
       if (error) throw error;
+      if (!rpcData?.success) throw new Error(rpcData?.error || 'Submission failed');
       const { data: updated } = await supabase.from('ticket_orders').select('*').eq('id', order.id).single();
       if (updated) setOrder(updated as TicketOrder);
       const qr = await generateQRDataURL('NEXUS-ORDER:' + order.id);

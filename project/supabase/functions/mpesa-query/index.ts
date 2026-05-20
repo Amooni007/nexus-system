@@ -65,6 +65,21 @@ serve(async (req) => {
     if (resultCode === '0' && order.payment_status === 'pending') {
       console.log('Callback missed — confirming order via query fallback');
 
+      // FIX-B: Check if order already confirmed or tickets already exist
+      // Prevents duplicate ticket generation when both callback and query fire
+      const { data: existingTickets } = await supabase
+        .from('tickets').select('id').eq('order_id', order.id).limit(1);
+
+      if (existingTickets && existingTickets.length > 0) {
+        console.log('Tickets already exist — skipping duplicate generation');
+        // Just ensure order is marked confirmed
+        await supabase.from('ticket_orders').update({
+          payment_status: 'confirmed',
+          updated_at: new Date().toISOString(),
+        }).eq('id', order.id);
+        return corsResponse({ status: 'confirmed', resolved: true, orderId: order.id });
+      }
+
       await supabase.from('ticket_orders').update({
         payment_status: 'confirmed',
         payment_confirmed_at: new Date().toISOString(),

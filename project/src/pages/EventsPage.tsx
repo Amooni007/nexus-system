@@ -148,11 +148,14 @@ export default function EventsPage() {
       const eventId = deleteTarget.id;
       const { data: guests } = await supabase.from('guests').select('id').eq('event_id', eventId);
       const guestIds = guests?.map((g: any) => g.id) || [];
-      await supabase.from('scan_logs').delete().eq('event_id', eventId);
-      await supabase.from('qr_codes').delete().eq('event_id', eventId);
-      if (guestIds.length > 0) await supabase.from('guests').delete().in('id', guestIds);
-      await supabase.from('tickets').delete().eq('event_id', eventId);
-      await supabase.from('ticket_orders').delete().eq('event_id', eventId);
+      // SERVER-SIDE: delete_event RPC handles cascade deletion atomically
+      // Validates super_admin role, deletes all related data in correct FK order
+      const { data: delResult, error: delErr } = await supabase.rpc('delete_event', {
+        p_event_id: eventId,
+        p_staff_id: profile!.id,
+      });
+      if (delErr) throw delErr;
+      if (!delResult?.success) throw new Error(delResult?.error || 'Failed to delete event');
       const { error } = await supabase.from('events').delete().eq('id', eventId);
       if (error) throw error;
       await logActivity(profile!.id, 'delete_event', 'event', eventId, { name: deleteTarget.name });

@@ -1,16 +1,9 @@
 // supabase/functions/generate-invite/index.ts
-//
-// Called by authenticated staff to create or refresh an invitation token for a guest.
-// Returns the plaintext token ONCE — it is never stored.
-// Only the SHA-256 hash is persisted in invitation_tokens.
-
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { crypto } from 'https://deno.land/std@0.168.0/crypto/mod.ts';
-import { encodeBase64Url } from 'https://deno.land/std@0.168.0/encoding/base64url.ts';
 
 const CORS = {
-  'Access-Control-Allow-Origin':  'https://nexus-system.pages.dev',
+  'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
@@ -21,16 +14,15 @@ async function sha256Hex(input: string): Promise<string> {
 }
 
 function generateToken(): string {
-  // 32 bytes = 256 bits of entropy, base64url encoded = 43 chars
+  // 32 random bytes → hex string (64 chars, 256 bits entropy)
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
-  return encodeBase64Url(bytes);
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
 
-  // Verify caller is authenticated staff
   const authHeader = req.headers.get('Authorization');
   if (!authHeader) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
@@ -56,7 +48,6 @@ serve(async (req) => {
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
   );
 
-  // Verify caller is event_manager or super_admin
   const { data: profile } = await supabase
     .from('profiles')
     .select('role, is_active')
@@ -76,7 +67,6 @@ serve(async (req) => {
     });
   }
 
-  // Verify guest exists and get event_id
   const { data: guest } = await supabase
     .from('guests')
     .select('id, event_id, status')
@@ -89,17 +79,16 @@ serve(async (req) => {
     });
   }
 
-  // Revoke any existing active tokens for this guest (one active token at a time)
+  // Revoke existing active tokens for this guest
   await supabase
     .from('invitation_tokens')
     .update({ revoked: true })
     .eq('guest_id', guestId)
     .eq('revoked', false);
 
-  // Generate new token
-  const plainToken = generateToken();
-  const tokenHash  = await sha256Hex(plainToken);
-  const expiresAt  = new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000).toISOString();
+  const plainToken  = generateToken();
+  const tokenHash   = await sha256Hex(plainToken);
+  const expiresAt   = new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000).toISOString();
 
   const { error: insertErr } = await supabase
     .from('invitation_tokens')
@@ -116,7 +105,6 @@ serve(async (req) => {
     });
   }
 
-  // Return the plaintext token ONCE — never stored, never logged
   return new Response(JSON.stringify({
     token:      plainToken,
     expires_at: expiresAt,

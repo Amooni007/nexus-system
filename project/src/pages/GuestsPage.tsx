@@ -106,11 +106,14 @@ export default function GuestsPage() {
       const ids = Array.from(selectedIds);
 
       // ✅ Delete in correct FK order: scan_logs → qr_codes → guests
-      await supabase.from('scan_logs').delete().in('guest_id', ids);
-      await supabase.from('qr_codes').delete().in('guest_id', ids);
+      // SERVER-SIDE: delete_guests_bulk RPC validates role and cascades
 
       // Delete guests
-      const { error } = await supabase.from('guests').delete().in('id', ids);
+      const { data: bulkDel, error } = await supabase.rpc('delete_guests_bulk', {
+        p_guest_ids: ids,
+        p_staff_id:  profile!.id,
+      });
+      const bulkErr = error || (!bulkDel?.success ? new Error(bulkDel?.error) : null);
       if (error) throw error;
 
       setGuests(prev => prev.filter(g => !selectedIds.has(g.id)));
@@ -127,9 +130,12 @@ export default function GuestsPage() {
   async function handleDeleteGuest(guest: Guest) {
     if (!window.confirm(`Permanently delete ${guest.name}?`)) return;
     // ✅ Delete in correct FK order: scan_logs → qr_codes → guest
-    await supabase.from('scan_logs').delete().eq('guest_id', guest.id);
-    await supabase.from('qr_codes').delete().eq('guest_id', guest.id);
-    const { error } = await supabase.from('guests').delete().eq('id', guest.id);
+    // SERVER-SIDE: delete_guest RPC validates role and cascades
+    const { data: delData, error } = await supabase.rpc('delete_guest', {
+      p_guest_id: guest.id,
+      p_staff_id: profile!.id,
+    });
+    const delErr = error || (!delData?.success ? new Error(delData?.error) : null);
     if (error) alert(error.message);
     else setGuests(prev => prev.filter(g => g.id !== guest.id));
   }
@@ -151,7 +157,7 @@ export default function GuestsPage() {
       .select('id')
       .single();
 
-    if (error) {
+    if (bulkErr) {
       alert("Error adding guest: " + error.message);
     } else {
       await supabase.from('qr_codes').insert({

@@ -33,9 +33,9 @@ export default function AdminPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
 
-  // ✅ Temp password shown after creation
+  // PHASE 6 FIX: Store invite URL instead of plaintext password
   const [createdCredentials, setCreatedCredentials] = useState<{
-    name: string; email: string; password: string; emailSent: boolean;
+    name: string; email: string; inviteUrl: string; emailSent: boolean;
   } | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -107,11 +107,13 @@ export default function AdminPage() {
           email: formData.email, role: formData.role,
         });
 
-        // ✅ Show credentials modal with temp password
+        // PHASE 6 FIX: Show invite URL — never store or display plaintext password
+        // The create-staff Edge Function returns temp_password for backward compat
+        // but we deliberately do NOT display it. Instead show the login URL.
         setCreatedCredentials({
-          name: formData.full_name,
-          email: formData.email,
-          password: data.temp_password,
+          name:      formData.full_name,
+          email:     formData.email,
+          inviteUrl: 'https://nexus-system.pages.dev/login',
           emailSent: data.email_sent,
         });
 
@@ -128,7 +130,13 @@ export default function AdminPage() {
 
   async function toggleActive(member: Profile) {
     if (!currentUser || currentUser.role !== 'super_admin') return;
-    await supabase.from('profiles').update({ is_active: !member.is_active }).eq('id', member.id);
+    // SERVER-SIDE: toggle_profile_active RPC validates super_admin role
+    const { data: toggleData, error: toggleErr } = await supabase.rpc('toggle_profile_active', {
+      p_target_id: member.id,
+      p_staff_id:  currentUser!.id,
+    });
+    if (toggleErr) { alert('Failed to update staff status'); return; }
+    if (!toggleData?.success) { alert(toggleData?.error || 'Failed to update'); return; }
     await logActivity(
       currentUser.id,
       member.is_active ? 'deactivate_staff' : 'activate_staff',
@@ -175,12 +183,7 @@ export default function AdminPage() {
     setDeleting(false);
   }
 
-  function copyPassword() {
-    if (!createdCredentials) return;
-    navigator.clipboard.writeText(createdCredentials.password);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }
+  // copyPassword removed — passwords no longer displayed in UI (Phase 6)
 
   if (loading) {
     return (
@@ -338,13 +341,13 @@ export default function AdminPage() {
                 <p className="text-sm text-slate-200 font-mono">{createdCredentials.email}</p>
               </div>
               <div>
-                <p className="text-xs text-slate-500 mb-1">Temporary Password</p>
+                <p className="text-xs text-slate-500 mb-1">Login URL to share</p>
                 <div className="flex items-center gap-2">
-                  <code className="flex-1 text-sm text-amber-300 font-mono bg-slate-900 px-3 py-2 rounded-lg border border-slate-700 select-all">
-                    {createdCredentials.password}
+                  <code className="flex-1 text-sm text-blue-300 font-mono bg-slate-900 px-3 py-2 rounded-lg border border-slate-700 select-all">
+                    {createdCredentials.inviteUrl}
                   </code>
                   <button
-                    onClick={copyPassword}
+                    onClick={() => { navigator.clipboard.writeText(createdCredentials.inviteUrl); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
                     className="flex items-center gap-1.5 px-3 py-2 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/20 text-blue-400 text-xs rounded-lg transition-colors"
                   >
                     {copied ? <CheckCircle size={13} /> : <Copy size={13} />}
@@ -354,9 +357,9 @@ export default function AdminPage() {
               </div>
             </div>
 
-            <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl">
-              <p className="text-xs text-amber-400">
-                ⚠️ The staff member will be required to change this password on first login. Store it securely and share it privately.
+            <div className="p-3 bg-blue-500/10 border border-blue-500/20 rounded-xl">
+              <p className="text-xs text-blue-400">
+                📧 A login email has been sent to {createdCredentials.email}. They will be required to change their password on first login. Do not share passwords over chat or email.
               </p>
             </div>
 
