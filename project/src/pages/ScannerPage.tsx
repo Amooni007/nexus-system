@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
-import { validateTicketQR } from '../lib/TicketingLib';
+// validateTicketQR removed — scanner now uses process_ticket_qr_scan RPC
 import Layout from '../components/layout/Layout';
 import Header from '../components/layout/Header';
 import Button from '../components/common/Button';
@@ -242,123 +242,98 @@ export default function ScannerPage() {
         return;
       }
 
-      const scanResult = await validateTicketQR(token, selectedEventId, profile!.id);
+      // SEC-01 FIX: Use process_ticket_qr_scan RPC
+      // Database validates atomically with FOR UPDATE row lock.
+      // Browser no longer decides validity or marks tickets as used.
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(token)) {
+        setResult({ state: 'invalid', type: 'ticket', title: '❌ Invalid Ticket', message: 'Malformed ticket token' });
+        addToast('invalid', '❌ Invalid Ticket', 'Malformed token', undefined, undefined, 'ticket');
+        isProcessingRef.current = false;
+        return;
+      }
+
+      const { data: sr, error: rpcErr } = await supabase.rpc('process_ticket_qr_scan', {
+        p_token:    token,
+        p_event_id: selectedEventId,
+        p_staff_id: profile!.id,
+      });
+
+      if (rpcErr || !sr) {
+        setResult({ state: 'error', type: 'ticket', title: 'Scan Error', message: 'Failed to validate ticket. Try again.' });
+        addToast('invalid', '❌ Scan Error', 'Validation failed', undefined, undefined, 'ticket');
+        isProcessingRef.current = false;
+        return;
+      }
 
       let state: ScanState;
       let title: string;
       let message: string;
       let toastState: Toast['state'];
 
-      if (scanResult.status === 'accepted') {
-        state = 'accepted';
-        title = '✅ Ticket Accepted';
-        message = 'Entry granted — ticket marked as used';
-        toastState = 'accepted';
-      } else if (scanResult.status === 'already_used') {
-        state = 'rejected';
-        title = '⚠️ Already Used';
-        message = scanResult.scanned_at
-          ? 'Already scanned at ' + format(new Date(scanResult.scanned_at), 'h:mm a, MMM d')
-          : 'This ticket has already been used';
-        toastState = 'rejected';
-      } else if (scanResult.status === 'wrong_event') {
-        state = 'invalid';
-        title = '❌ Wrong Event';
-        message = 'This ticket is for a different event';
-        toastState = 'invalid';
+      if (sr.status === 'accepted') {
+        state = 'accepted'; title = '✅ ' + (sr.ticket_category || 'TICKET') + ' ACCEPTED';
+        message = 'Entry granted'; toastState = 'accepted';
+        playBeep('accepted'); vibrate('accepted');
+      } else if (sr.status === 'already_used') {
+        state = 'rejected'; title = '⚠️ Already Used';
+        message = sr.scanned_at ? 'Already scanned at ' + format(new Date(sr.scanned_at), 'h:mm a, MMM d') : 'This ticket has already been used';
+        toastState = 'rejected'; playBeep('rejected'); vibrate('rejected');
+      } else if (sr.status === 'wrong_event') {
+        state = 'invalid'; title = '❌ Wrong Event'; message = 'This ticket is for a different event';
+        toastState = 'invalid'; playBeep('invalid'); vibrate('invalid');
       } else {
-        state = 'invalid';
-        title = '❌ Invalid Ticket';
-        message = 'Ticket not found, cancelled, or payment not confirmed';
-        toastState = 'invalid';
+        state = 'invalid'; title = '❌ Invalid Ticket'; message = sr.message || 'Ticket not found or payment not confirmed';
+        toastState = 'invalid'; playBeep('invalid'); vibrate('invalid');
       }
 
-      setResult({
-        state, type: 'ticket', title, message,
-        guestName: scanResult.customer_name,
-        ticketCategory: scanResult.ticket_category,
-      });
-
-      addToast(toastState, title, message, scanResult.customer_name, scanResult.ticket_category, 'ticket');
-
-      setScanHistory(prev => [{
-        name: scanResult.customer_name || 'Unknown',
-        result: scanResult.status,
-        time: new Date(),
-        type: 'ticket',
-        category: scanResult.ticket_category,
-      }, ...prev.slice(0, 29)]);
-
-      // BROKEN-02 FIX: Write ticket scan to scan_logs for full audit trail.
-      // Previously ticket QR scans were NOT logged — only guest invitation scans were.
-      // guest_id and event_id are nullable (second migration made them nullable)
-      // so we can log ticket scans without a guest_id reference.
-      await supabase.from('scan_logs').insert({
-        staff_id:   profile!.id,
-        event_id:   selectedEventId,
-        guest_id:   null,           // ticket scans have no guest_id
-        qr_code_id: null,           // ticket QRs are not in qr_codes table
-        result:     scanResult.status === 'accepted'    ? 'accepted'
-                  : scanResult.status === 'already_used' ? 'rejected_used'
-                  : 'invalid',
-        reason: message,
-      }).catch(err => console.warn('scan_log insert failed:', err));
-      // Non-blocking — scan result is already recorded, log failure is not fatal
-
+      setResult({ state, type: 'ticket', title, message, guestName: sr.customer_name, ticketCategory: sr.ticket_category });
+      addToast(toastState, title, message, sr.customer_name, sr.ticket_category, 'ticket');
+      setScanHistory(prev => [{ name: sr.customer_name || 'Unknown', result: sr.status, time: new Date(), type: 'ticket', category: sr.ticket_category }, ...prev.slice(0, 29)]);
+      // scan_logs written inside the RPC — no separate insert needed
       isProcessingRef.current = false;
       return;
     }
 
-    // ── GUEST INVITATION QR (existing system) ─────────────────────────────
-    const { data: qrCode } = await supabase
-      .from('qr_codes')
-      .select('*, guest:guests(name, status), event:events(name)')
-      .eq('code', code)
-      .maybeSingle();
-
-    if (!qrCode) {
-      setResult({ state: 'invalid', type: 'unknown', title: 'Invalid QR Code', message: 'This QR code is not recognised.' });
-      addToast('invalid', '❌ Invalid QR Code', 'Not recognised in the system', undefined, undefined, 'unknown');
-      await supabase.from('scan_logs').insert({
-        staff_id: profile!.id, result: 'invalid',
-        reason: 'QR code not found', qr_code_id: null, guest_id: null, event_id: null,
-      });
-      isProcessingRef.current = false;
-      return;
-    }
-
-    const guest = (qrCode as any).guest;
-    const event = (qrCode as any).event;
-    let scanResult: ScanResult;
-    let dbResult: string;
-
-    if (guest?.status === 'inactive') {
-      scanResult = { state: 'rejected', type: 'guest', title: 'Access Denied', message: 'This guest is inactive.', guestName: guest.name, eventName: event?.name };
-      dbResult = 'rejected_inactive';
-      addToast('rejected', '⚠️ Access Denied', 'Guest is inactive', guest.name, undefined, 'guest');
-    } else if (qrCode.status === 'used') {
-      scanResult = {
-        state: 'rejected', type: 'guest', title: 'Already Used',
-        message: 'QR already scanned' + (qrCode.used_at ? ' on ' + format(new Date(qrCode.used_at), 'MMM d at h:mm a') : '') + '.',
-        guestName: guest?.name, eventName: event?.name,
-      };
-      dbResult = 'rejected_used';
-      addToast('rejected', '⚠️ Already Used', 'This QR was already scanned', guest?.name, undefined, 'guest');
-    } else {
-      await supabase.from('qr_codes').update({ status: 'used', used_at: new Date().toISOString() }).eq('id', qrCode.id);
-      scanResult = { state: 'accepted', type: 'guest', title: 'Access Granted', message: 'Welcome! Entry recorded.', guestName: guest?.name, eventName: event?.name };
-      dbResult = 'accepted';
-      addToast('accepted', '✅ Access Granted', 'Entry recorded', guest?.name, undefined, 'guest');
-    }
-
-    await supabase.from('scan_logs').insert({
-      qr_code_id: qrCode.id, guest_id: qrCode.guest_id,
-      event_id: qrCode.event_id, staff_id: profile!.id,
-      result: dbResult, reason: scanResult.message,
+    // ── GUEST INVITATION QR — SEC-01 FIX ─────────────────────────────────
+    // Uses process_guest_qr_scan RPC with FOR UPDATE row locking.
+    // Database decides validity atomically. Browser only displays result.
+    // Eliminates TOCTOU race condition and direct qr_codes.update().
+    const { data: gsr, error: gsrErr } = await supabase.rpc('process_guest_qr_scan', {
+      p_qr_code:  code,
+      p_staff_id: profile!.id,
+      p_event_id: selectedEventId || null,
     });
 
-    setResult(scanResult);
-    setScanHistory(prev => [{ name: guest?.name || 'Unknown', result: dbResult, time: new Date(), type: 'guest' }, ...prev.slice(0, 29)]);
+    if (gsrErr || !gsr) {
+      setResult({ state: 'error', type: 'guest', title: 'Scan Error', message: 'Failed to validate QR. Try again.' });
+      addToast('invalid', '❌ Scan Error', 'Validation failed', undefined, undefined, 'guest');
+      isProcessingRef.current = false;
+      return;
+    }
+
+    let state: ScanState;
+    let title: string;
+    let toastState: Toast['state'];
+
+    if (gsr.status === 'accepted') {
+      state = 'accepted'; title = '✅ Access Granted'; toastState = 'accepted';
+      playBeep('accepted'); vibrate('accepted');
+    } else if (gsr.status === 'rejected_used') {
+      state = 'rejected'; title = '⚠️ Already Used'; toastState = 'rejected';
+      playBeep('rejected'); vibrate('rejected');
+    } else if (gsr.status === 'rejected_inactive') {
+      state = 'rejected'; title = '⚠️ Access Denied'; toastState = 'rejected';
+      playBeep('rejected'); vibrate('rejected');
+    } else {
+      state = 'invalid'; title = '❌ Invalid QR Code'; toastState = 'invalid';
+      playBeep('invalid'); vibrate('invalid');
+    }
+
+    setResult({ state, type: 'guest', title, message: gsr.message, guestName: gsr.guest_name, eventName: gsr.event_name });
+    addToast(toastState, title, gsr.message, gsr.guest_name, undefined, 'guest');
+    setScanHistory(prev => [{ name: gsr.guest_name || 'Unknown', result: gsr.status, time: new Date(), type: 'guest' }, ...prev.slice(0, 29)]);
+    // scan_logs written inside the RPC — no separate insert needed
     isProcessingRef.current = false;
   }, [profile, selectedEventId]);
 

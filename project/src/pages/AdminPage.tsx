@@ -220,7 +220,7 @@ export default function AdminPage() {
         ) : (
           <div className="divide-y divide-slate-800/60">
             {staff.map((member) => (
-              <div key={member.id} className="flex items-center gap-4 px-6 py-4 hover:bg-slate-800/20 transition-colors">
+              <div key={member.id} className="flex items-start sm:items-center gap-3 sm:gap-4 px-4 sm:px-6 py-4 hover:bg-slate-800/20 transition-colors">
                 <div className="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center flex-shrink-0">
                   <span className="text-sm font-semibold text-slate-300">
                     {member.full_name.charAt(0).toUpperCase()}
@@ -242,27 +242,28 @@ export default function AdminPage() {
                   <p className="text-xs text-slate-600">Added {format(new Date(member.created_at), 'MMM d, yyyy')}</p>
                 </div>
 
-                <div className="flex items-center gap-2 flex-shrink-0">
+                {/* MOBILE-01 FIX: Stack badge + actions vertically on mobile */}
+                <div className="flex flex-col sm:flex-row items-end sm:items-center gap-2 flex-shrink-0">
                   {getStatusBadge(member.role)}
-
-                  <Button
-                    variant={member.is_active ? 'danger' : 'success'}
-                    size="sm"
-                    icon={<Power size={13} />}
-                    onClick={() => toggleActive(member)}
-                  >
-                    {member.is_active ? 'Deactivate' : 'Activate'}
-                  </Button>
-
-                  {/* ✅ Delete button */}
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    icon={<Trash2 size={13} />}
-                    onClick={() => { setDeleteTarget(member); setDeleteConfirmText(''); }}
-                  >
-                    Delete
-                  </Button>
+                  <div className="flex items-center gap-1.5">
+                    <Button
+                      variant={member.is_active ? 'danger' : 'success'}
+                      size="sm"
+                      icon={<Power size={13} />}
+                      onClick={() => toggleActive(member)}
+                    >
+                      <span className="hidden sm:inline">{member.is_active ? 'Deactivate' : 'Activate'}</span>
+                      <span className="sm:hidden">{member.is_active ? 'Off' : 'On'}</span>
+                    </Button>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      icon={<Trash2 size={13} />}
+                      onClick={() => { setDeleteTarget(member); setDeleteConfirmText(''); }}
+                    >
+                      <span className="hidden sm:inline">Delete</span>
+                    </Button>
+                  </div>
                 </div>
               </div>
             ))}

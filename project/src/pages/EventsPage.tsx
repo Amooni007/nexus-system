@@ -156,8 +156,8 @@ export default function EventsPage() {
       });
       if (delErr) throw delErr;
       if (!delResult?.success) throw new Error(delResult?.error || 'Failed to delete event');
-      const { error } = await supabase.from('events').delete().eq('id', eventId);
-      if (error) throw error;
+      // SEC-03 FIX: Removed redundant events.delete() — delete_event RPC already
+      // cascades and deletes the event row atomically. Double-delete was a bug.
       await logActivity(profile!.id, 'delete_event', 'event', eventId, { name: deleteTarget.name });
       setEvents(prev => prev.filter(e => e.id !== eventId));
       setDeleteTarget(null); setDeleteConfirmText('');
