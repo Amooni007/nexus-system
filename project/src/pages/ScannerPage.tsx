@@ -346,48 +346,35 @@ export default function ScannerPage() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const vw = video.videoWidth;
-    const vh = video.videoHeight;
+    // Scan the full frame — cropping caused misalignment between the visual
+    // bracket and the actual scan region on different screen sizes.
+    // Consecutive detection (2 frames) prevents false positives instead.
+    canvas.width  = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // ── Crop to center 70% square ────────────────────────────────────────────
-    // Only scan the center targeting box — ignores edges and background noise.
-    // This prevents accidental triggers from patterns outside the scan zone.
-    const cropSize = Math.min(vw, vh) * 0.70;
-    const cropX    = (vw - cropSize) / 2;
-    const cropY    = (vh - cropSize) / 2;
-
-    canvas.width  = cropSize;
-    canvas.height = cropSize;
-    ctx.drawImage(video, cropX, cropY, cropSize, cropSize, 0, 0, cropSize, cropSize);
-
-    const imageData = ctx.getImageData(0, 0, cropSize, cropSize);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const detected  = jsQR(imageData.data, canvas.width, canvas.height, {
       inversionAttempts: 'dontInvert',
     });
 
     if (detected && !isProcessingRef.current) {
       const code = detected.data;
-
-      // ── Require 2 consecutive detections of the same code ────────────────
-      // Prevents single-frame false positives from blurry or partial reads.
+      // Require 2 consecutive detections to prevent single-frame false positives
       if (code === lastDetectedRef.current) {
         consecutiveRef.current += 1;
       } else {
         lastDetectedRef.current = code;
         consecutiveRef.current  = 1;
       }
-
       if (consecutiveRef.current >= 2) {
         consecutiveRef.current  = 0;
         lastDetectedRef.current = '';
         processQRCode(code);
       }
     } else {
-      // Reset consecutive count if nothing detected this frame
-      if (!detected) {
-        consecutiveRef.current  = 0;
-        lastDetectedRef.current = '';
-      }
+      consecutiveRef.current  = 0;
+      lastDetectedRef.current = '';
     }
 
     scheduleNextFrame(scanFrame);

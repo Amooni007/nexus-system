@@ -94,7 +94,7 @@ export default function ScanLogsPage() {
             <p className="text-slate-400">No scan logs found</p>
           </div>
         ) : (
-          <table className="w-full">
+          <div class="overflow-x-auto"><table className="w-full">
             <thead>
               <tr className="border-b border-slate-800/60">
                 <th className="text-left px-6 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Guest</th>
@@ -127,7 +127,7 @@ export default function ScanLogsPage() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
     </Layout>

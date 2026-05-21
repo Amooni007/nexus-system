@@ -148,7 +148,7 @@ export default function TicketOrdersPage() {
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
           {[
             { label: 'Total', value: stats.total, color: 'text-white', icon: <Users size={14} /> },
             { label: 'Pending', value: stats.pending, color: 'text-amber-400', icon: <Clock size={14} /> },
@@ -244,7 +244,7 @@ export default function TicketOrdersPage() {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 flex-shrink-0">
+                    <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
                       {order.payment_status === 'pending_verification' && (
                         <button onClick={() => handleConfirm(order)} disabled={isProcessing}
                           className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1 transition-colors disabled:opacity-50">

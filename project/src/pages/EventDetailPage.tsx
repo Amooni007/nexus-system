@@ -207,7 +207,7 @@ export default function EventDetailPage() {
               </div>
             </div>
             {(profile?.role === 'super_admin' || profile?.role === 'event_manager') && (
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <Button variant="ghost" size="sm" icon={<Edit2 size={14} />} onClick={() => setIsEditEventOpen(true)}>Edit</Button>
                 <Button
                   variant={event.status === 'open' ? 'danger' : 'success'} size="sm"
@@ -304,7 +304,7 @@ export default function EventDetailPage() {
           <div className="px-5 py-3 border-t border-slate-800/60 bg-slate-950/40">
             <p className="text-xs text-slate-500 mb-1.5 font-medium">Public Ticket Purchase Link</p>
             <div className="flex items-center gap-2">
-              <div className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-300 font-mono truncate">
+              <div className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-300 font-mono truncate min-w-0">
                 {publicTicketUrl}
               </div>
               <button onClick={copyTicketLink}
