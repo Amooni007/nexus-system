@@ -34,7 +34,11 @@ interface InviteData {
 type PageState = 'loading' | 'valid' | 'invalid' | 'expired' | 'revoked' | 'inactive';
 
 export default function InvitationPage() {
-  const { token } = useParams<{ token: string }>();
+  // Handle both routes:
+  //   /invite/:token      — new secure token route
+  //   /invitation/:guestId — old route (backward compat)
+  const { token, guestId } = useParams<{ token?: string; guestId?: string }>();
+  const routeToken = token || guestId; // whichever param is present
   const [state,         setState]         = useState<PageState>('loading');
   const [inviteData,    setInviteData]    = useState<InviteData | null>(null);
   const [qrImage,       setQrImage]       = useState('');
@@ -43,12 +47,12 @@ export default function InvitationPage() {
   const invRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!token) { setState('invalid'); setInvalidReason('No token provided'); return; }
+    if (!routeToken) { setState('invalid'); setInvalidReason('No token provided'); return; }
 
     async function load() {
       try {
         const res = await fetch(
-          `${SUPABASE_URL}/functions/v1/validate-invite?token=${encodeURIComponent(token)}`,
+          `${SUPABASE_URL}/functions/v1/validate-invite?token=${encodeURIComponent(routeToken)}`,
           {
             headers: {
               // Anon key is fine here — the Edge Function uses service role internally
@@ -84,7 +88,7 @@ export default function InvitationPage() {
     }
 
     load();
-  }, [token]);
+  }, [routeToken]);
 
   async function handleDownloadPDF() {
     setDownloadingPDF(true);

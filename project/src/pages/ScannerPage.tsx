@@ -298,13 +298,25 @@ export default function ScannerPage() {
     }
 
     // ── GUEST INVITATION QR — SEC-01 FIX ─────────────────────────────────
+    // Require event selection for guest scans too — prevents scanning
+    // a guest QR from Event A while at Event B's gate.
+    if (!selectedEventId) {
+      setResult({
+        state: 'invalid', type: 'guest',
+        title: 'Select Event First',
+        message: 'Choose an event above before scanning',
+      });
+      addToast('invalid', '❌ No Event Selected', 'Pick an event above first', undefined, undefined, 'guest');
+      isProcessingRef.current = false;
+      return;
+    }
+
     // Uses process_guest_qr_scan RPC with FOR UPDATE row locking.
     // Database decides validity atomically. Browser only displays result.
-    // Eliminates TOCTOU race condition and direct qr_codes.update().
     const { data: gsr, error: gsrErr } = await supabase.rpc('process_guest_qr_scan', {
       p_qr_code:  code,
       p_staff_id: profile!.id,
-      p_event_id: selectedEventId || null,
+      p_event_id: selectedEventId,
     });
 
     if (gsrErr || !gsr) {

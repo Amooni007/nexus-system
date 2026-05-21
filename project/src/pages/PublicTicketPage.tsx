@@ -10,12 +10,15 @@ import {
   Ticket, CalendarDays, MapPin, CheckCircle2, AlertTriangle,
   ArrowRight, Loader2, Phone, User, ShieldCheck, Copy,
   Check, XCircle, Clock, RefreshCw, ChevronDown,
+  Download, MessageCircle, QrCode as QrIcon, FileText,
 } from 'lucide-react';
 import { format } from 'date-fns';
 import {
   getPublicEventInfo, getCategoryAvailability, createOrder, isValidKEPhone,
 } from '../lib/TicketingLib';
 import { initiateStkPush, pollUntilConfirmed } from '../lib/mpesa';
+import { downloadPaymentReceipt } from '../lib/receiptGenerator';
+import { downloadTicketAsPNG } from '../lib/ticketRenderer';
 import { generateQRDataURL } from '../lib/qr';
 import { supabase } from '../lib/supabase';
 import type { PublicEventInfo, TicketCategoryConfig, TicketOrder } from '../types/ticketing';
@@ -146,6 +149,8 @@ export default function PublicTicketPage() {
   const [submitting,setSubmitting]= useState(false);
 
   const [order,     setOrder]     = useState<TicketOrder | null>(null);
+  const [tickets,   setTickets]   = useState<any[]>([]);
+  const [downloading, setDownloading] = useState<string | null>(null); // ticketToken being downloaded
   const [qrDataURL, setQrDataURL] = useState('');
   const [errMsg,    setErrMsg]    = useState('');
 
@@ -223,6 +228,11 @@ export default function PublicTicketPage() {
       if (finalStatus === 'confirmed') {
         const qr = await generateQRDataURL('NEXUS-ORDER:' + orderId);
         setQrDataURL(qr);
+        // Fetch generated tickets for the success screen
+        const { data: generatedTickets } = await supabase
+          .from('tickets').select('ticket_token, customer_name, ticket_category, status, delivery_status')
+          .eq('order_id', orderId).eq('status', 'unused');
+        setTickets(generatedTickets || []);
         setStep('success');
       } else if (finalStatus === 'cancelled') {
         setStkPhase('cancelled');
@@ -283,6 +293,11 @@ export default function PublicTicketPage() {
       if (updated) setOrder(updated as TicketOrder);
       const qr = await generateQRDataURL('NEXUS-ORDER:' + order.id);
       setQrDataURL(qr);
+      // Fetch tickets if already confirmed (STK flow)
+      const { data: generatedTickets } = await supabase
+        .from('tickets').select('ticket_token, customer_name, ticket_category, status')
+        .eq('order_id', order.id).eq('status', 'unused');
+      setTickets(generatedTickets || []);
       setStep('success');
     } catch (err: unknown) {
       setTxErrors({ txCode: err instanceof Error ? err.message : 'Submission failed. Try again.' });
@@ -485,56 +500,228 @@ export default function PublicTicketPage() {
   }
 
   // ── Success screen ─────────────────────────────────────────────────────────
+  // ── Download receipt ──────────────────────────────────────────────────────
+  async function handleDownloadReceipt() {
+    if (!order || !event) return;
+    setDownloading('receipt');
+    try {
+      await downloadPaymentReceipt({
+        orderRef:        order.id.slice(0, 8).toUpperCase(),
+        customerName:    order.customer_name,
+        customerPhone:   order.customer_phone,
+        ticketCategory:  order.ticket_category,
+        quantity:        order.quantity,
+        unitPrice:       order.unit_price,
+        totalAmount:     order.total_amount,
+        paymentMethod:   order.payment_mode === 'platform_mpesa' ? 'M-Pesa STK Push' : 'M-Pesa Manual',
+        transactionCode: order.mpesa_transaction_code || null,
+        paidAt:          order.payment_confirmed_at || order.created_at,
+        eventName:       event.name,
+        eventDate:       event.date,
+        eventLocation:   event.location,
+        ticketTokens:    tickets.map(t => t.ticket_token),
+      });
+    } catch (e) {
+      console.error('Receipt download failed:', e);
+    }
+    setDownloading(null);
+  }
+
+  // ── Download individual ticket as PNG ─────────────────────────────────────
+  async function handleDownloadTicket(ticket: any) {
+    if (!event) return;
+    setDownloading(ticket.ticket_token);
+    try {
+      await downloadTicketAsPNG({
+        ticketToken:      ticket.ticket_token,
+        customerName:     ticket.customer_name,
+        ticketCategory:   ticket.ticket_category,
+        eventName:        event.name,
+        eventDate:        new Date(event.date).toLocaleDateString('en-KE', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' }),
+        eventTime:        new Date(event.date).toLocaleTimeString('en-KE', { hour: '2-digit', minute: '2-digit' }),
+        eventLocation:    event.location,
+        ticketId:         ticket.ticket_token,
+        templateImageUrl: null,
+        eventId:          order!.event_id,
+      });
+    } catch (e) {
+      console.error('Ticket download failed:', e);
+    }
+    setDownloading(null);
+  }
+
+  // ── WhatsApp delivery ─────────────────────────────────────────────────────
+  function handleWhatsAppDelivery() {
+    if (!order || !event) return;
+    const ref       = order.id.slice(0, 8).toUpperCase();
+    const eventDate = new Date(event.date).toLocaleDateString('en-KE', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+    const message   = encodeURIComponent(
+      `🎟 *Your Ticket — ${event.name}*
+
+` +
+      `Hello ${order.customer_name}!
+
+` +
+      `Your payment has been confirmed.
+
+` +
+      `*Event:* ${event.name}
+` +
+      `*Date:* ${eventDate}
+` +
+      `*Venue:* ${event.location}
+` +
+      `*Category:* ${order.ticket_category}
+` +
+      `*Qty:* ${order.quantity} ticket${order.quantity > 1 ? 's' : ''}
+` +
+      `*Amount:* KES ${order.total_amount.toLocaleString()}
+
+` +
+      `*Order Ref:* ${ref}
+
+` +
+      `Show this message + your QR code at the gate for entry.
+
+` +
+      `_Powered by Nexus Event System_`
+    );
+    window.open(`https://wa.me/?text=${message}`, '_blank');
+  }
+
   if (step === 'success' && order) {
     const isPending = order.payment_status === 'pending_verification';
+    const ref       = order.id.slice(0, 8).toUpperCase();
+
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center px-4 py-10">
-        <div className="w-full max-w-md space-y-4">
-          <div className="bg-slate-900 rounded-2xl border border-slate-700 p-6 text-center space-y-4">
-            <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto ${isPending ? 'bg-amber-500/10' : 'bg-emerald-500/10'}`}>
-              <CheckCircle2 className={isPending ? 'text-amber-400' : 'text-emerald-400'} size={40} />
+      <div className="min-h-screen bg-slate-950 text-white pb-16">
+        {/* Header */}
+        <div className={`px-4 pt-10 pb-6 text-center border-b ${isPending ? 'bg-gradient-to-b from-amber-950/40 to-slate-950 border-amber-800/30' : 'bg-gradient-to-b from-emerald-950/40 to-slate-950 border-emerald-800/30'}`}>
+          <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-3 ${isPending ? 'bg-amber-500/10' : 'bg-emerald-500/10'}`}>
+            <CheckCircle2 className={isPending ? 'text-amber-400' : 'text-emerald-400'} size={36} />
+          </div>
+          <h1 className="text-2xl font-bold text-white">{isPending ? 'Order Received!' : '🎟 Payment Confirmed!'}</h1>
+          <p className="text-slate-400 text-sm mt-1 max-w-xs mx-auto">
+            {isPending
+              ? 'Your code is being verified. Tickets sent via WhatsApp once confirmed.'
+              : 'Your tickets are ready. Download or share via WhatsApp below.'}
+          </p>
+        </div>
+
+        <div className="max-w-md mx-auto px-4 pt-5 space-y-4">
+
+          {/* Order summary card */}
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl overflow-hidden">
+            <div className="px-4 py-3 bg-slate-800/60 border-b border-slate-700 flex items-center justify-between">
+              <p className="text-sm font-semibold text-white">Order Summary</p>
+              <span className="text-xs font-mono text-slate-400 bg-slate-800 px-2 py-0.5 rounded">{ref}</span>
             </div>
-            <div>
-              <h2 className="text-2xl font-bold text-white">{isPending ? 'Order Received!' : '🎟 Tickets Confirmed!'}</h2>
-              <p className="text-slate-400 text-sm mt-1 leading-relaxed">
-                {isPending
-                  ? 'Your payment code is being verified. Tickets will be sent to your WhatsApp once confirmed.'
-                  : 'Payment verified! Your tickets will be sent to your WhatsApp shortly.'}
-              </p>
-            </div>
-            <div className="bg-slate-800 rounded-xl p-4 text-left space-y-2 text-sm">
+            <div className="p-4 space-y-2 text-sm">
               {[
                 { label: 'Event',    value: event.name },
                 { label: 'Name',     value: order.customer_name },
                 { label: 'Category', value: order.ticket_category },
                 { label: 'Qty',      value: `${order.quantity} ticket${order.quantity > 1 ? 's' : ''}` },
-                { label: 'Total',    value: `KES ${order.total_amount.toLocaleString()}`, cls: 'text-emerald-400 font-bold' },
               ].map(r => (
                 <div key={r.label} className="flex justify-between">
                   <span className="text-slate-400">{r.label}</span>
-                  <span className={(r as any).cls || 'text-white font-medium'}>{r.value}</span>
+                  <span className="text-white font-medium">{r.value}</span>
                 </div>
               ))}
-              <div className="flex justify-between pt-1 border-t border-slate-700">
+              <div className="flex justify-between font-bold pt-2 border-t border-slate-700/60">
+                <span className="text-slate-300">Total Paid</span>
+                <span className="text-emerald-400">KES {order.total_amount.toLocaleString()}</span>
+              </div>
+              {order.mpesa_transaction_code && (
+                <div className="flex justify-between text-xs">
+                  <span className="text-slate-500">M-Pesa Code</span>
+                  <span className="text-slate-300 font-mono">{order.mpesa_transaction_code}</span>
+                </div>
+              )}
+              <div className="flex justify-between pt-1">
                 <span className="text-slate-400">Status</span>
-                <span className={isPending ? 'text-amber-400 font-semibold' : 'text-emerald-400 font-semibold'}>
+                <span className={`font-semibold text-xs px-2 py-0.5 rounded-full ${isPending ? 'bg-amber-900/40 text-amber-300' : 'bg-emerald-900/40 text-emerald-300'}`}>
                   {isPending ? '⏳ Pending Verification' : '✓ Confirmed'}
                 </span>
               </div>
-              <p className="text-slate-600 text-xs pt-1">
-                Ref: <span className="font-mono text-slate-400">{order.id.slice(0, 8).toUpperCase()}</span>
-              </p>
             </div>
           </div>
+
+          {/* Action buttons — only for confirmed orders */}
+          {!isPending && (
+            <>
+              {/* WhatsApp share */}
+              <button
+                onClick={handleWhatsAppDelivery}
+                className="w-full flex items-center justify-center gap-2.5 bg-[#25D366] hover:bg-[#20bc5a] text-white font-bold py-4 rounded-2xl transition-colors text-base">
+                <MessageCircle size={20} />
+                Share Ticket on WhatsApp
+              </button>
+
+              {/* Download receipt */}
+              <button
+                onClick={handleDownloadReceipt}
+                disabled={downloading === 'receipt'}
+                className="w-full flex items-center justify-center gap-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-white font-semibold py-3.5 rounded-2xl transition-colors text-sm disabled:opacity-50">
+                {downloading === 'receipt'
+                  ? <Loader2 size={16} className="animate-spin" />
+                  : <FileText size={16} />}
+                {downloading === 'receipt' ? 'Generating...' : 'Download Payment Receipt (PDF)'}
+              </button>
+
+              {/* Individual ticket downloads */}
+              {tickets.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-slate-400 text-xs font-medium px-1">Your Tickets</p>
+                  {tickets.map((t, i) => (
+                    <div key={t.ticket_token} className="bg-slate-900 border border-slate-700 rounded-2xl p-4 flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-indigo-500/10 flex items-center justify-center flex-shrink-0">
+                        <Ticket size={16} className="text-indigo-400" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-white text-sm font-medium truncate">{t.customer_name}</p>
+                        <p className="text-slate-500 text-xs">{t.ticket_category} · #{t.ticket_token.slice(0, 8).toUpperCase()}</p>
+                      </div>
+                      <button
+                        onClick={() => handleDownloadTicket(t)}
+                        disabled={downloading === t.ticket_token}
+                        className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium transition-colors disabled:opacity-50 flex-shrink-0">
+                        {downloading === t.ticket_token
+                          ? <Loader2 size={12} className="animate-spin" />
+                          : <Download size={12} />}
+                        {downloading === t.ticket_token ? '...' : 'PNG'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Pending — show instructions */}
+          {isPending && (
+            <div className="bg-amber-900/20 border border-amber-500/30 rounded-2xl p-4 space-y-2 text-sm">
+              <p className="text-amber-300 font-semibold text-sm">What happens next?</p>
+              <p className="text-slate-300">1. The organiser will verify your M-Pesa code</p>
+              <p className="text-slate-300">2. Your ticket will be sent to your WhatsApp</p>
+              <p className="text-slate-300">3. You can also show your order ref at the gate</p>
+            </div>
+          )}
+
+          {/* Order ref QR */}
           {qrDataURL && (
             <div className="bg-slate-900 border border-slate-700 rounded-2xl p-4 flex flex-col items-center gap-2">
               <p className="text-slate-400 text-xs font-medium">Order Reference QR</p>
-              <div className="bg-white p-2 rounded-xl"><img src={qrDataURL} alt="QR" className="w-32 h-32" /></div>
-              <p className="text-slate-600 text-xs">Show this to the organiser if needed</p>
+              <div className="bg-white p-2 rounded-xl">
+                <img src={qrDataURL} alt="Order QR" className="w-28 h-28" />
+              </div>
+              <p className="text-slate-500 text-xs text-center">Show this to the organiser if needed</p>
             </div>
           )}
-          <p className="text-center text-slate-500 text-xs">
-            Save your ref: <span className="text-slate-300 font-mono font-bold">{order.id.slice(0, 8).toUpperCase()}</span>
+
+          <p className="text-center text-slate-600 text-xs pb-4">
+            Order ref: <span className="font-mono text-slate-400 font-semibold">{ref}</span>
+            <br/>Save this — you may need it at the gate
           </p>
         </div>
       </div>
