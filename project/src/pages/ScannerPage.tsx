@@ -158,6 +158,8 @@ export default function ScannerPage() {
   const lastScanTimeRef = useRef<number>(0);
   const isProcessingRef = useRef(false);
   const cameraActiveRef = useRef(false);
+  const consecutiveRef    = useRef(0);     // counts consecutive detections of same QR
+  const lastDetectedRef   = useRef('');    // last detected QR code string
 
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState('');

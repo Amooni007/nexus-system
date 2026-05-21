@@ -346,7 +346,8 @@ export default function EventDetailPage() {
             {canManage && <p className="text-slate-600 text-sm mt-1">Add guests to generate invitations</p>}
           </div>
         ) : (
-          <table className="w-full">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[500px]">
             <thead>
               <tr className="border-b border-slate-800/60">
                 <th className="text-left px-6 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Guest</th>
@@ -402,6 +403,7 @@ export default function EventDetailPage() {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
 

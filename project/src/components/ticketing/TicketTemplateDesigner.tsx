@@ -470,18 +470,22 @@ export default function TicketTemplateDesigner({ eventId, category, onClose, onS
       </div>
 
       {/* MOBILE: Layers quick-select strip */}
-      <div className="md:hidden flex items-center gap-1.5 px-3 py-2 bg-slate-900/80 border-t border-slate-800 overflow-x-auto flex-shrink-0 scrollbar-none">
+      <div className="md:hidden flex items-center gap-1.5 px-3 py-2 bg-slate-900/80 border-t border-slate-800 overflow-x-auto flex-shrink-0">
         <span className="text-slate-500 text-xs font-medium flex-shrink-0 pr-1">Select:</span>
-        {layout.elements.map(el => (
-          <button key={el.id} onClick={() => setSelected(el.id as ElementId)}
-            className={"flex-shrink-0 text-xs px-2.5 py-1.5 rounded-lg border transition-colors " + (
-              selected === el.id
-                ? 'border-indigo-500 bg-indigo-900/30 text-indigo-300'
-                : 'border-slate-700 text-slate-400 active:bg-slate-800'
-            )}>
-            {el.label}
-          </button>
-        ))}
+        {ELEMENT_ORDER.map(id => {
+          const el = layout?.elements?.[id];
+          if (!el) return null;
+          return (
+            <button key={id} onClick={() => setSelected(id as ElementId)}
+              className={"flex-shrink-0 text-xs px-2.5 py-1.5 rounded-lg border transition-colors " + (
+                selected === id
+                  ? 'border-indigo-500 bg-indigo-900/30 text-indigo-300'
+                  : 'border-slate-700 text-slate-400 active:bg-slate-800'
+              )}>
+              {el.label}
+            </button>
+          );
+        })}
       </div>
 
       {/* BOTTOM BAR */}
