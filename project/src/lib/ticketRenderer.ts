@@ -12,7 +12,10 @@ const CAT: Record<string, {badge:string;badgeText:string;bg:string;accent:string
 };
 const sc=(c:string)=>CAT[c]||{badge:'#6366f1',badgeText:'#ffffff',bg:'#1e1b4b',accent:'#6366f1'};
 const p2x=(p:number,t:number)=>(p/100)*t;
-const cache:Record<string,TicketLayoutConfig>={};
+
+// TTL cache — prevents stale layouts from blocking template image updates
+const cache:Record<string,{layout:TicketLayoutConfig;ts:number}>={};
+const CACHE_TTL = 60000; // 1 minute
 
 function rrect(ctx:CanvasRenderingContext2D,x:number,y:number,w:number,h:number,r:number){
   ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);
@@ -20,29 +23,32 @@ function rrect(ctx:CanvasRenderingContext2D,x:number,y:number,w:number,h:number,
   ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);
   ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();
 }
+
 function loadImg(src:string):Promise<HTMLImageElement|null>{
   return new Promise(r=>{
     const i=new Image();
     i.crossOrigin='anonymous';
     i.onload=()=>r(i);
     i.onerror=()=>{
-      // Retry without crossOrigin (works for public buckets)
+      // Retry without crossOrigin for public buckets
       const i2=new Image();
       i2.onload=()=>r(i2);
       i2.onerror=()=>r(null);
       i2.src=src;
     };
-    i.src=src+'&v='+Date.now();
+    i.src=src;
   });
 }
 
 export async function getLayout(eventId:string,cat:string):Promise<TicketLayoutConfig>{
   const key=`${eventId}:${cat}`;
-  if(cache[key])return cache[key];
+  if(cache[key] && Date.now()-cache[key].ts < CACHE_TTL) return cache[key].layout;
   const{data}=await supabase.from('ticket_template_layouts').select('layout_config').eq('event_id',eventId).eq('category_name',cat).maybeSingle();
   const l=(data?.layout_config as TicketLayoutConfig)||DEFAULT_LAYOUT;
-  cache[key]=l;return l;
+  cache[key]={layout:l,ts:Date.now()};
+  return l;
 }
+
 export function clearLayoutCache(eventId:string,cat:string){delete cache[`${eventId}:${cat}`];}
 
 export interface TicketRenderParams{
@@ -57,11 +63,22 @@ export async function renderTicketToCanvas(canvas:HTMLCanvasElement,p:TicketRend
   const layout=await getLayout(p.eventId,p.ticketCategory);
   const s=sc(p.ticketCategory);
 
-  // Background
+  // Background — template image takes priority over gradient
   const templateUrl = p.templateImageUrl || (layout as any).templateImageUrl || null;
- if(templateUrl){
+  if(templateUrl){
     const bg=await loadImg(templateUrl);
-    if(bg) ctx.drawImage(bg,0,0,CW,CH);
+    if(bg){
+      ctx.drawImage(bg,0,0,CW,CH);
+      // Dark overlay so text remains readable on any background image
+      ctx.fillStyle='rgba(0,0,0,0.45)';
+      ctx.fillRect(0,0,CW,CH);
+    } else {
+      // Image failed to load — fall back to gradient
+      const g=ctx.createLinearGradient(0,0,CW,CH);g.addColorStop(0,s.bg);g.addColorStop(1,'#1e293b');
+      ctx.fillStyle=g;ctx.fillRect(0,0,CW,CH);
+    }
+  } else {
+    // No template — use category gradient
     const g=ctx.createLinearGradient(0,0,CW,CH);g.addColorStop(0,s.bg);g.addColorStop(1,'#1e293b');
     ctx.fillStyle=g;ctx.fillRect(0,0,CW,CH);
     ctx.fillStyle=s.accent;ctx.globalAlpha=0.10;ctx.fillRect(0,0,CW,4);ctx.fillRect(0,0,4,CH);ctx.globalAlpha=1;
@@ -115,7 +132,6 @@ export async function ticketToDataURL(p:TicketRenderParams):Promise<string>{
   const c=document.createElement('canvas');await renderTicketToCanvas(c,p);return c.toDataURL('image/png',1.0);
 }
 
-// Render all tickets for an order — each gets unique token = unique QR = unique PNG
 export async function renderAllOrderTickets(params:{
   tickets:Array<{ticket_token:string;id:string}>;
   customerName:string;ticketCategory:string;eventName:string;
