@@ -20,8 +20,20 @@ function rrect(ctx:CanvasRenderingContext2D,x:number,y:number,w:number,h:number,
   ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);
   ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();
 }
-function loadImg(src:string):Promise<HTMLImageElement>{
-  return new Promise(r=>{const i=new Image();i.crossOrigin='anonymous';i.onload=()=>r(i);i.onerror=()=>r(i);i.src=src;});
+function loadImg(src:string):Promise<HTMLImageElement|null>{
+  return new Promise(r=>{
+    const i=new Image();
+    i.crossOrigin='anonymous';
+    i.onload=()=>r(i);
+    i.onerror=()=>{
+      // Retry without crossOrigin (works for public buckets)
+      const i2=new Image();
+      i2.onload=()=>r(i2);
+      i2.onerror=()=>r(null);
+      i2.src=src;
+    };
+    i.src=src+'&v='+Date.now();
+  });
 }
 
 export async function getLayout(eventId:string,cat:string):Promise<TicketLayoutConfig>{
@@ -47,8 +59,9 @@ export async function renderTicketToCanvas(canvas:HTMLCanvasElement,p:TicketRend
 
   // Background
   const templateUrl = p.templateImageUrl || (layout as any).templateImageUrl || null;
-  if(templateUrl){
-    const bg=await loadImg(templateUrl);ctx.drawImage(bg,0,0,CW,CH);  }else{
+ if(templateUrl){
+    const bg=await loadImg(templateUrl);
+    if(bg) ctx.drawImage(bg,0,0,CW,CH);
     const g=ctx.createLinearGradient(0,0,CW,CH);g.addColorStop(0,s.bg);g.addColorStop(1,'#1e293b');
     ctx.fillStyle=g;ctx.fillRect(0,0,CW,CH);
     ctx.fillStyle=s.accent;ctx.globalAlpha=0.10;ctx.fillRect(0,0,CW,4);ctx.fillRect(0,0,4,CH);ctx.globalAlpha=1;
