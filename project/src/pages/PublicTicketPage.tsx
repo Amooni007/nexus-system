@@ -1148,8 +1148,18 @@ export default function PublicTicketPage() {
                     </button>
                     {showFallback && (
                       <div className="border-t border-slate-800 p-4">
-                        <p className="text-slate-500 text-xs mb-3">Click "Send M-Pesa Prompt" first to create your order. After paying, the transaction code form will appear automatically.</p>
-                        <ManualPaymentPanel event={event} total={total} orderId="preview" custName={custName} />
+                       <ManualPaymentPanel event={event} total={total} orderId="new" custName={custName} />
+                        <div className="mt-3 space-y-2">
+                          <input type="text" value={txCode}
+                            onChange={e => setTxCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
+                            placeholder="Enter M-Pesa code e.g. PGM1ABC234" maxLength={12}
+                            className="w-full bg-slate-800 border border-slate-600 rounded-xl px-4 py-3 text-white font-mono text-base placeholder-slate-600 focus:outline-none uppercase tracking-widest" />
+                          {txErrors.txCode && <p className="text-red-400 text-xs">{txErrors.txCode}</p>}
+                          <button onClick={handleManualPrimary} disabled={submitting || txCode.length < 8}
+                            className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold py-3.5 rounded-xl transition-colors">
+                            {submitting ? 'Submitting…' : '✅ Submit Order'}
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
