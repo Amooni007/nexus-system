@@ -46,10 +46,9 @@ export async function renderTicketToCanvas(canvas:HTMLCanvasElement,p:TicketRend
   const s=sc(p.ticketCategory);
 
   // Background
-  if(p.templateImageUrl){
-    const bg=await loadImg(p.templateImageUrl);ctx.drawImage(bg,0,0,CW,CH);
-    ctx.fillStyle='rgba(0,0,0,0.50)';ctx.fillRect(0,0,CW,CH);
-  }else{
+  const templateUrl = p.templateImageUrl || (layout as any).templateImageUrl || null;
+  if(templateUrl){
+    const bg=await loadImg(templateUrl);ctx.drawImage(bg,0,0,CW,CH);  }else{
     const g=ctx.createLinearGradient(0,0,CW,CH);g.addColorStop(0,s.bg);g.addColorStop(1,'#1e293b');
     ctx.fillStyle=g;ctx.fillRect(0,0,CW,CH);
     ctx.fillStyle=s.accent;ctx.globalAlpha=0.10;ctx.fillRect(0,0,CW,4);ctx.fillRect(0,0,4,CH);ctx.globalAlpha=1;
