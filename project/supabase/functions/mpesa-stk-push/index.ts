@@ -37,6 +37,18 @@ serve(async (req) => {
       .maybeSingle();
 
     if (orderErr || !order) return corsError('Order not found', 404);
+
+    // IDEMPOTENCY: if this order already has a checkout request in-flight,
+    // return the existing one instead of initiating a duplicate STK Push.
+    // Prevents double-prompts from rapid retries or double-clicks.
+    if (order.mpesa_checkout_request_id && order.payment_status === 'pending') {
+      return corsResponse({
+        checkoutRequestId: order.mpesa_checkout_request_id,
+        message: 'STK Push already initiated for this order',
+        alreadySent: true,
+      });
+    }
+
     if (order.payment_status === 'confirmed') return corsError('Order already paid');
     if (order.payment_status === 'cancelled') return corsError('Order has been cancelled');
 

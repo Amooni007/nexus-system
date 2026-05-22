@@ -158,7 +158,7 @@ serve(async (req) => {
     guest:    { name: guest.name, status: guest.status },
     event:    { name: event.name, date: event.date, location: event.location, description: event.description },
     qr: qrCode ? { code: qrCode.code, status: qrCode.status, used_at: qrCode.used_at } : null,
-    template,
+    template: template ? { ...template, background_image: template.image_url } : null,
   }), {
     status: 200,
     headers: { ...CORS, 'Content-Type': 'application/json' },

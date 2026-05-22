@@ -16,14 +16,14 @@ import { format } from 'date-fns';
 import {
   getPublicEventInfo, getCategoryAvailability, createOrder, isValidKEPhone,
 } from '../lib/TicketingLib';
-import { initiateStkPush, pollUntilConfirmed } from '../lib/mpesa';
+import { initiateStkPush, pollUntilConfirmed, subscribeToOrderUpdates } from '../lib/mpesa';
 import { downloadPaymentReceipt } from '../lib/receiptGenerator';
 import { downloadTicketAsPNG } from '../lib/ticketRenderer';
 import { generateQRDataURL } from '../lib/qr';
 import { supabase } from '../lib/supabase';
 import type { PublicEventInfo, TicketCategoryConfig, TicketOrder } from '../types/ticketing';
 
-type Step = 'browse' | 'details' | 'payment' | 'stk_waiting' | 'success' | 'error';
+type Step = 'browse' | 'details' | 'payment' | 'stk_waiting' | 'manual_pending' | 'success' | 'error';
 type StkPhase = 'sending' | 'waiting_pin' | 'timed_out' | 'cancelled' | 'failed';
 
 const CAT: Record<string, { bg: string; border: string; badge: string; text: string; glow: string }> = {
@@ -138,10 +138,16 @@ export default function PublicTicketPage() {
   const [stkPhase,    setStkPhase]    = useState<StkPhase>('sending');
   const [stkMessage,  setStkMessage]  = useState('');
   const [pollSeconds, setPollSeconds] = useState(0);
-  const [retrying,    setRetrying]    = useState(false);
-  const [showFallback,setShowFallback]= useState(false);
-  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const secondsRef   = useRef(0);
+  const [retrying,          setRetrying]          = useState(false);
+  const [processingPayment, setProcessingPayment] = useState(false);
+  const [retryCooldown,     setRetryCooldown]     = useState(0);
+  const [showFallback,      setShowFallback]      = useState(false);
+  const [paymentTimeline,   setPaymentTimeline]   = useState<string[]>([]);
+  const fallbackRef = useRef<HTMLDivElement>(null);
+  const pollTimerRef  = useRef<ReturnType<typeof setInterval> | null>(null);
+  const secondsRef    = useRef(0);
+  const isMountedRef  = useRef(true);
+  const realtimeUnsubRef = useRef<(() => void) | null>(null);
 
   // Manual / fallback fields
   const [txCode,    setTxCode]    = useState('');
@@ -160,7 +166,49 @@ export default function PublicTicketPage() {
       .then(([ev, av]) => { setEvent(ev); setAvailability(av); setLoading(false); });
   }, [eventId]);
 
-  useEffect(() => () => { if (pollTimerRef.current) clearInterval(pollTimerRef.current); }, []);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+      if (realtimeUnsubRef.current) realtimeUnsubRef.current();
+    };
+  }, []);
+
+  // Recovery useEffect: if user refreshes mid-payment, restore the waiting screen
+  useEffect(() => {
+    if (!event || !eventId) return;
+    const pendingId = sessionStorage.getItem('nexus_pending_order');
+    if (!pendingId) return;
+
+    supabase
+      .from('ticket_orders')
+      .select('id, payment_status, customer_name, customer_phone, ticket_category, quantity, total_amount, unit_price, payment_mode, mpesa_transaction_code, payment_confirmed_at, created_at, event_id')
+      .eq('id', pendingId)
+      .eq('event_id', eventId)
+      .in('payment_status', ['pending', 'pending_verification', 'confirmed'])
+      .maybeSingle()
+      .then(async ({ data }) => {
+        if (!isMountedRef.current) return;
+        if (!data) { sessionStorage.removeItem('nexus_pending_order'); return; }
+        setOrder(data as TicketOrder);
+        if (data.payment_status === 'confirmed') {
+          // Payment succeeded while browser was closed — restore success screen
+          const { data: tix } = await supabase
+            .from('tickets').select('ticket_token, customer_name, ticket_category, status')
+            .eq('order_id', data.id).eq('status', 'unused');
+          setTickets(tix || []);
+          sessionStorage.removeItem('nexus_pending_order');
+          setStep('success');
+        } else {
+          // Still pending — restore waiting screen
+          setStep('stk_waiting');
+          setStkPhase('timed_out');
+          setStkMessage('You have an in-progress payment. Pay manually below or retry STK Push.');
+          setShowFallback(true);
+        }
+      });
+  }, [event, eventId]);
 
   function getRemaining(cat: TicketCategoryConfig) {
     return Math.max(0, cat.quantity - (availability[cat.name] || 0));
@@ -184,6 +232,10 @@ export default function PublicTicketPage() {
     return Object.keys(errs).length === 0;
   }
 
+  function addTimeline(msg: string) {
+    setPaymentTimeline(prev => [...prev, msg]);
+  }
+
   function startTimer() {
     secondsRef.current = 0; setPollSeconds(0);
     if (pollTimerRef.current) clearInterval(pollTimerRef.current);
@@ -196,6 +248,9 @@ export default function PublicTicketPage() {
   // ── Core STK flow ─────────────────────────────────────────────────────────
   const runStkFlow = useCallback(async (existingOrderId?: string) => {
     if (!event || !selectedCat) return;
+    if (processingPayment) return;
+    setProcessingPayment(true);
+    setPaymentTimeline([]);
     setStkPhase('sending');
     setStkMessage('Sending M-Pesa prompt to your phone…');
     setShowFallback(false);
@@ -203,6 +258,7 @@ export default function PublicTicketPage() {
     let orderId = existingOrderId;
     try {
       if (!orderId) {
+        addTimeline('Order created');
         const created = await createOrder({
           event_id: eventId!, customer_name: custName.trim(),
           customer_phone: custPhone.trim(), ticket_category: selectedCat.name,
@@ -210,45 +266,81 @@ export default function PublicTicketPage() {
         });
         setOrder(created);
         orderId = created.id;
+        // Payment lock: prevents multi-tab duplicate orders
+        sessionStorage.setItem('nexus_pending_order', created.id);
       }
 
       await initiateStkPush({ orderId: orderId!, phone: custPhone.trim(), amount: total, eventName: event.name });
+      addTimeline('STK Push sent to phone');
 
       setStkPhase('waiting_pin');
       setStkMessage('Enter your M-Pesa PIN on your phone to confirm');
       startTimer();
 
-      const finalStatus = await pollUntilConfirmed(orderId!, (status) => {
-        if (status === 'pending') setStkMessage('Waiting for M-Pesa confirmation…');
-        if (status === 'pending_verification') setStkMessage('Payment received — verifying…');
+      // Realtime subscription fires instantly when DB row changes.
+      // pollUntilConfirmed runs in parallel as a fallback.
+      // resolved guard prevents double state transitions.
+      const finalStatus = await new Promise<'confirmed' | 'failed' | 'cancelled' | 'timeout'>((resolve) => {
+        let resolved = false;
+        const safeResolve = (s: 'confirmed' | 'failed' | 'cancelled' | 'timeout') => {
+          if (resolved || !isMountedRef.current) return;
+          resolved = true;
+          if (realtimeUnsubRef.current) { realtimeUnsubRef.current(); realtimeUnsubRef.current = null; }
+          resolve(s);
+        };
+
+        // Realtime: instant resolution on DB change
+        const unsub = subscribeToOrderUpdates(orderId!, (status) => {
+          if (status === 'pending') setStkMessage('Waiting for M-Pesa confirmation…');
+          if (status === 'pending_verification') setStkMessage('Payment received — verifying…');
+          if (['confirmed', 'failed', 'cancelled', 'expired'].includes(status)) {
+            safeResolve(status === 'expired' ? 'timeout' : status as any);
+          }
+        });
+        realtimeUnsubRef.current = unsub;
+
+        // Polling fallback: also resolves if realtime misses the event
+        pollUntilConfirmed(orderId!, () => {}).then(s => safeResolve(s));
       });
 
       stopTimer();
 
       if (finalStatus === 'confirmed') {
+        addTimeline('Payment confirmed');
+        addTimeline('Tickets generated');
+        // Order reference QR — shown only as reference, not for gate entry
         const qr = await generateQRDataURL('NEXUS-ORDER:' + orderId);
         setQrDataURL(qr);
-        // Fetch generated tickets for the success screen
         const { data: generatedTickets } = await supabase
           .from('tickets').select('ticket_token, customer_name, ticket_category, status, delivery_status')
           .eq('order_id', orderId).eq('status', 'unused');
         setTickets(generatedTickets || []);
+        sessionStorage.removeItem('nexus_pending_order');
+        setProcessingPayment(false);
         setStep('success');
       } else if (finalStatus === 'cancelled') {
+        sessionStorage.removeItem('nexus_pending_order');
+        setProcessingPayment(false);
         setStkPhase('cancelled');
         setStkMessage('You cancelled the M-Pesa prompt.');
         setShowFallback(true);
+        setTimeout(() => fallbackRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
       } else if (finalStatus === 'timeout') {
         setStkPhase('timed_out');
+        sessionStorage.removeItem('nexus_pending_order');
         setStkMessage('The prompt timed out — customer did not respond within 2 minutes.');
         setShowFallback(true);
       } else {
+        sessionStorage.removeItem('nexus_pending_order');
+        setProcessingPayment(false);
         setStkPhase('failed');
         setStkMessage('STK Push failed. Please try again or pay manually below.');
         setShowFallback(true);
       }
     } catch (err: unknown) {
       stopTimer();
+      sessionStorage.removeItem('nexus_pending_order');
+      setProcessingPayment(false);
       setStkPhase('failed');
       setStkMessage(err instanceof Error ? err.message : 'Failed to send M-Pesa prompt.');
       setShowFallback(true);
@@ -262,10 +354,52 @@ export default function PublicTicketPage() {
   }
 
   async function handleRetryStk() {
-    if (!order) return;
+    if (!order || processingPayment || retryCooldown > 0) return;
     setRetrying(true);
     await runStkFlow(order.id);
     setRetrying(false);
+    // 15-second cooldown after retry
+    setRetryCooldown(15);
+    const cd = setInterval(() => {
+      setRetryCooldown(prev => {
+        if (prev <= 1) { clearInterval(cd); return 0; }
+        return prev - 1;
+      });
+    }, 1000);
+  }
+
+  // Polls DB directly for order status changes.
+  // Used after manual fallback payment code is submitted.
+  // Cancellable via the returned cancel function.
+  function pollOrderStatus(
+    orderId: string,
+    onUpdate: (status: string) => void,
+    intervalMs = 5000,
+    maxWaitMs  = 180000
+  ): Promise<'confirmed' | 'timeout'> & { cancel: () => void } {
+    let cancelled = false;
+    let iv: ReturnType<typeof setInterval>;
+
+    const promise = new Promise<'confirmed' | 'timeout'>((resolve) => {
+      const start = Date.now();
+      iv = setInterval(async () => {
+        if (cancelled) { clearInterval(iv); resolve('timeout'); return; }
+        if (Date.now() - start > maxWaitMs) { clearInterval(iv); resolve('timeout'); return; }
+        try {
+          const { data } = await supabase
+            .from('ticket_orders')
+            .select('payment_status')
+            .eq('id', orderId)
+            .single();
+          if (!isMountedRef.current) { clearInterval(iv); resolve('timeout'); return; }
+          if (data) onUpdate(data.payment_status);
+          if (data?.payment_status === 'confirmed') { clearInterval(iv); resolve('confirmed'); }
+        } catch { /* keep polling on network error */ }
+      }, intervalMs);
+    }) as Promise<'confirmed' | 'timeout'> & { cancel: () => void };
+
+    promise.cancel = () => { cancelled = true; clearInterval(iv); };
+    return promise;
   }
 
   // Manual fallback submit (after STK fails — existing order)
@@ -293,12 +427,21 @@ export default function PublicTicketPage() {
       if (updated) setOrder(updated as TicketOrder);
       const qr = await generateQRDataURL('NEXUS-ORDER:' + order.id);
       setQrDataURL(qr);
-      // Fetch tickets if already confirmed (STK flow)
-      const { data: generatedTickets } = await supabase
-        .from('tickets').select('ticket_token, customer_name, ticket_category, status')
-        .eq('order_id', order.id).eq('status', 'unused');
-      setTickets(generatedTickets || []);
-      setStep('success');
+      // Move to pending screen — do NOT show success yet
+      // Polling will move to success once payment is verified
+      setStep('manual_pending');
+      // Background poll — resolves when admin/C2B confirms payment
+      pollOrderStatus(order.id, (status) => {
+        if (status === 'confirmed' && isMountedRef.current) {
+          supabase.from('tickets').select('ticket_token, customer_name, ticket_category, status')
+            .eq('order_id', order.id).eq('status', 'unused')
+            .then(({ data }) => {
+              setTickets(data || []);
+              sessionStorage.removeItem('nexus_pending_order');
+              setStep('success');
+            });
+        }
+      });
     } catch (err: unknown) {
       setTxErrors({ txCode: err instanceof Error ? err.message : 'Submission failed. Try again.' });
     } finally {
@@ -423,10 +566,12 @@ export default function PublicTicketPage() {
             {/* Retry + manual buttons when failed */}
             {hasFailed && (
               <div className="flex gap-2 pt-1">
-                <button onClick={handleRetryStk} disabled={retrying}
+                <button
+                  onClick={handleRetryStk}
+                  disabled={retrying || processingPayment || retryCooldown > 0}
                   className="flex-1 flex items-center justify-center gap-1.5 text-sm px-3 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition-colors disabled:opacity-50">
                   {retrying ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
-                  {retrying ? 'Sending…' : 'Retry STK Push'}
+                  {retrying ? 'Sending…' : retryCooldown > 0 ? `Wait ${retryCooldown}s` : 'Retry STK Push'}
                 </button>
                 {hasManualOption && (
                   <button onClick={() => setShowFallback(true)}
@@ -440,7 +585,7 @@ export default function PublicTicketPage() {
 
           {/* Inline fallback panel */}
           {showFallback && hasManualOption && order && (
-            <div className="space-y-4">
+            <div ref={fallbackRef} className="space-y-4">
               <div className="flex items-center gap-2">
                 <div className="flex-1 h-px bg-slate-800" />
                 <p className="text-slate-500 text-xs font-medium px-2 whitespace-nowrap">PAY MANUALLY INSTEAD</p>
@@ -486,6 +631,30 @@ export default function PublicTicketPage() {
                 className="text-sm text-indigo-400 hover:text-indigo-300 transition-colors">
                 ← Go back and try again
               </button>
+            </div>
+          )}
+
+          {/* Payment timeline */}
+          {paymentTimeline.length > 0 && (
+            <div className="bg-slate-900 border border-slate-700/60 rounded-2xl p-4 space-y-2">
+              {paymentTimeline.map((item, i) => (
+                <div key={i} className="flex items-center gap-2.5 text-xs">
+                  <div className="w-4 h-4 rounded-full bg-emerald-500 flex items-center justify-center flex-shrink-0">
+                    <CheckCircle2 size={10} className="text-white" />
+                  </div>
+                  <span className="text-slate-300">{item}</span>
+                </div>
+              ))}
+              {(stkPhase === 'sending' || stkPhase === 'waiting_pin') && (
+                <div className="flex items-center gap-2.5 text-xs">
+                  <div className="w-4 h-4 rounded-full bg-indigo-500/30 border border-indigo-500/50 flex items-center justify-center flex-shrink-0">
+                    <Loader2 size={8} className="text-indigo-400 animate-spin" />
+                  </div>
+                  <span className="text-slate-500">
+                    {stkPhase === 'sending' ? 'Sending prompt…' : 'Awaiting PIN confirmation…'}
+                  </span>
+                </div>
+              )}
             </div>
           )}
 
@@ -587,6 +756,69 @@ export default function PublicTicketPage() {
       `_Powered by Nexus Event System_`
     );
     window.open(`https://wa.me/?text=${message}`, '_blank');
+  }
+
+  // ── Manual pending screen ──────────────────────────────────────────────────
+  // Shown after manual payment code submitted — BEFORE verification completes.
+  // Does NOT show tickets or WhatsApp buttons — payment not yet verified.
+  if (step === 'manual_pending' && order) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center px-4 py-10">
+        <div className="w-full max-w-md space-y-4">
+          <div className="bg-slate-900 border border-amber-500/30 rounded-2xl p-6 text-center space-y-4">
+            <div className="w-16 h-16 rounded-full bg-amber-500/10 flex items-center justify-center mx-auto">
+              <Loader2 className="text-amber-400 animate-spin" size={32} />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-white">Payment Submitted</h2>
+              <p className="text-slate-400 text-sm mt-1 leading-relaxed">
+                Your transaction code has been received. We are verifying your payment — this may take a few minutes.
+              </p>
+            </div>
+            <div className="bg-slate-800 rounded-xl p-4 text-left space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span className="text-slate-400">Order Ref</span>
+                <span className="text-white font-mono font-bold">{order.id.slice(0, 8).toUpperCase()}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Amount</span>
+                <span className="text-emerald-400 font-bold">KES {order.total_amount.toLocaleString()}</span>
+              </div>
+              {order.mpesa_transaction_code && (
+                <div className="flex justify-between">
+                  <span className="text-slate-400">M-Pesa Code</span>
+                  <span className="text-white font-mono">{order.mpesa_transaction_code}</span>
+                </div>
+              )}
+              <div className="flex justify-between pt-1 border-t border-slate-700">
+                <span className="text-slate-400">Status</span>
+                <span className="text-amber-400 font-semibold text-xs px-2 py-0.5 rounded-full bg-amber-900/40">
+                  ⏳ Awaiting Verification
+                </span>
+              </div>
+            </div>
+            <div className="bg-slate-800/60 border border-slate-700 rounded-xl p-3 text-xs text-slate-400 space-y-1 text-left">
+              <p className="text-slate-300 font-medium mb-1">What happens next:</p>
+              <p>1. Your M-Pesa code is being verified automatically</p>
+              <p>2. Once confirmed, your tickets will appear here</p>
+              <p>3. You can also show your order ref at the gate</p>
+            </div>
+          </div>
+          {qrDataURL && (
+            <div className="bg-slate-900 border border-slate-700 rounded-2xl p-4 flex flex-col items-center gap-2">
+              <p className="text-slate-400 text-xs font-medium">Order Reference QR</p>
+              <div className="bg-white p-2 rounded-xl">
+                <img src={qrDataURL} alt="Order QR" className="w-24 h-24" />
+              </div>
+              <p className="text-slate-500 text-xs">Show this to the organiser if needed</p>
+            </div>
+          )}
+          <p className="text-center text-slate-600 text-xs">
+            Keep this page open — it will update automatically when verified
+          </p>
+        </div>
+      </div>
+    );
   }
 
   if (step === 'success' && order) {

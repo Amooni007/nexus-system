@@ -246,7 +246,7 @@ export default function TicketTemplateDesigner({ eventId, category, onClose, onS
   async function save() {
     setSaving(true);
     const {error}=await supabase.from('ticket_template_layouts').upsert(
-      {event_id:eventId,category_name:category.name,layout_config:layout,updated_at:new Date().toISOString()},
+      {event_id:eventId,category_name:category.name,layout_config:{...layout,templateImageUrl:category.template_image_url||null},updated_at:new Date().toISOString()},
       {onConflict:'event_id,category_name'}
     );
     setSaving(false);

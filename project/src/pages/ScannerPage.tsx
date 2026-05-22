@@ -256,7 +256,7 @@ export default function ScannerPage() {
       }
 
       const { data: sr, error: rpcErr } = await supabase.rpc('process_ticket_qr_scan', {
-        p_token:    token,
+        p_token:    code,
         p_event_id: selectedEventId,
         p_staff_id: profile!.id,
       });
@@ -428,7 +428,7 @@ export default function ScannerPage() {
       <div className="mb-4 bg-slate-900 border border-slate-700 rounded-2xl p-4">
         <div className="flex items-center gap-2 mb-2">
           <Ticket size={15} className="text-indigo-400" />
-          <p className="text-sm font-medium text-slate-200">Select Event <span className="text-slate-500 font-normal">(required for ticket QR scanning)</span></p>
+          <p className="text-sm font-medium text-slate-200">Select Event <span className="text-red-400 font-normal text-xs">* Required before scanning</span></p>
         </div>
         <select value={selectedEventId} onChange={e => {
             setSelectedEventId(e.target.value);
