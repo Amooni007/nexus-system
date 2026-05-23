@@ -333,6 +333,9 @@ export default function ScannerPage() {
     if (gsr.status === 'accepted') {
       state = 'accepted'; title = '✅ Access Granted'; toastState = 'accepted';
       playBeep('accepted'); vibrate('accepted');
+      } else if (gsr.status === 'wrong_event') {
+      state = 'invalid'; title = '❌ Wrong Event'; toastState = 'invalid';
+      playBeep('invalid'); vibrate('invalid');
     } else if (gsr.status === 'rejected_used') {
       state = 'rejected'; title = '⚠️ Already Used'; toastState = 'rejected';
       playBeep('rejected'); vibrate('rejected');
