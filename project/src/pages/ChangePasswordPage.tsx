@@ -7,24 +7,23 @@ import Button from '../components/common/Button';
 import { Input } from '../components/common/FormField';
 
 export default function ChangePasswordPage() {
-  const { profile, refreshProfile, signOut } = useAuth();
+  const { profile, signOut } = useAuth();
   const navigate = useNavigate();
 
-  const [newPassword, setNewPassword]     = useState('');
+  const [newPassword, setNewPassword]         = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [showNew, setShowNew]     = useState(false);
+  const [showNew, setShowNew]         = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
-  const [loading, setLoading]   = useState(false);
-  const [error, setError]       = useState('');
-  const [success, setSuccess]   = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError]     = useState('');
+  const [success, setSuccess] = useState(false);
 
-  // Password strength checks
   const checks = {
-    length:   newPassword.length >= 8,
-    upper:    /[A-Z]/.test(newPassword),
-    lower:    /[a-z]/.test(newPassword),
-    digit:    /[0-9]/.test(newPassword),
-    special:  /[@#$!%^&*]/.test(newPassword),
+    length:  newPassword.length >= 8,
+    upper:   /[A-Z]/.test(newPassword),
+    lower:   /[a-z]/.test(newPassword),
+    digit:   /[0-9]/.test(newPassword),
+    special: /[@#$!%^&*]/.test(newPassword),
   };
   const allPassed = Object.values(checks).every(Boolean);
 
@@ -43,23 +42,25 @@ export default function ChangePasswordPage() {
       if (updateError) { setError(updateError.message); setLoading(false); return; }
 
       // 2. Clear the must_change_password flag
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .update({ must_change_password: false })
-        .eq('id', profile!.id);
+      if (profile?.id) {
+        await supabase
+          .from('profiles')
+          .update({ must_change_password: false })
+          .eq('id', profile.id);
+      }
 
-      if (profileError) { setError(profileError.message); setLoading(false); return; }
-
-      // 3. Refresh profile so AuthContext has updated flag
-      await refreshProfile();
-
+      // 3. Show success then sign out — invite sessions cannot become full sessions
+      // Staff must log in fresh with their new password
       setSuccess(true);
-      setTimeout(() => navigate('/dashboard', { replace: true }), 1500);
+      setTimeout(async () => {
+        await supabase.auth.signOut();
+        navigate('/login', { replace: true });
+      }, 1500);
+
     } catch {
       setError('Something went wrong. Please try again.');
+      setLoading(false);
     }
-
-    setLoading(false);
   }
 
   return (
@@ -73,8 +74,7 @@ export default function ChangePasswordPage() {
           </div>
           <h1 className="text-2xl font-bold text-slate-100 mb-2">Change Your Password</h1>
           <p className="text-slate-400 text-sm">
-            Hi <strong className="text-slate-200">{profile?.full_name}</strong> — you're using a temporary password.
-            Please set a new one to continue.
+            Hi <strong className="text-slate-200">{profile?.full_name || 'there'}</strong> — please set a password to continue.
           </p>
         </div>
 
@@ -82,7 +82,7 @@ export default function ChangePasswordPage() {
           <div className="flex flex-col items-center gap-3 p-6 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl text-center">
             <CheckCircle size={32} className="text-emerald-400" />
             <p className="text-emerald-400 font-semibold">Password updated!</p>
-            <p className="text-slate-400 text-sm">Redirecting to dashboard...</p>
+            <p className="text-slate-400 text-sm">Redirecting to login — please sign in with your new password.</p>
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="space-y-5 bg-slate-900 border border-slate-800 rounded-2xl p-6">
@@ -109,10 +109,10 @@ export default function ChangePasswordPage() {
             {newPassword && (
               <div className="grid grid-cols-2 gap-1.5">
                 {[
-                  { label: 'At least 8 characters', ok: checks.length },
-                  { label: 'Uppercase letter',       ok: checks.upper  },
-                  { label: 'Lowercase letter',       ok: checks.lower  },
-                  { label: 'Number',                 ok: checks.digit  },
+                  { label: 'At least 8 characters', ok: checks.length  },
+                  { label: 'Uppercase letter',       ok: checks.upper   },
+                  { label: 'Lowercase letter',       ok: checks.lower   },
+                  { label: 'Number',                 ok: checks.digit   },
                   { label: 'Special character',      ok: checks.special },
                 ].map((c) => (
                   <div key={c.label} className={`flex items-center gap-1.5 text-xs px-2 py-1 rounded-lg ${c.ok ? 'text-emerald-400 bg-emerald-500/10' : 'text-slate-500 bg-slate-800'}`}>
