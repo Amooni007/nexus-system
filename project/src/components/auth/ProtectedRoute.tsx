@@ -16,7 +16,10 @@ export default function ProtectedRoute({ children, allowedRoles }: ProtectedRout
 
   // Recovery sessions must ONLY access /reset-password.
   // Block them from all protected routes to prevent session fixation.
-  if (isRecoverySession) return <Navigate to="/reset-password" replace />;
+ if (isRecoverySession) {
+    const dest = window.location.hash.includes('type=invite') ? '/change-password' : '/reset-password';
+    return <Navigate to={dest} replace />;
+  }
 
   if (!user) return <Navigate to="/login" replace />;
 

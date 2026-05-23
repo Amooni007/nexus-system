@@ -10,7 +10,7 @@ interface AuthContextType {
   loading: boolean;
   profileError: boolean;
   mustChangePassword: boolean;
-  isRecoverySession: boolean; // true when opened via password reset link
+  isRecoverySession: boolean;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
@@ -28,6 +28,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isRecoverySession, setIsRecoverySession] = useState(false);
   const mountedRef  = useRef(true);
   const fetchingRef = useRef(false);
+  const isRecoveryRef = useRef(false); // ref copy so event handlers can read current value
 
   async function fetchProfile(userId: string): Promise<void> {
     if (fetchingRef.current) return;
@@ -49,7 +50,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } else {
         setProfileError(false);
 
-        // Block inactive users
         if (data && data.is_active === false) {
           await supabase.auth.signOut();
           setProfile(null);
@@ -60,10 +60,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
 
         setProfile(data);
-        // ✅ Read must_change_password flag from profile
         setMustChangePassword(data?.must_change_password === true);
       }
-    } catch (err) {
+    } catch {
       if (!mountedRef.current) return;
       setProfileError(true);
       setProfile(null);
@@ -79,26 +78,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     mountedRef.current = true;
 
-    // ── SECURITY FIX: Detect recovery session from URL hash BEFORE getSession ──
-    // When a user clicks a password reset link, Supabase appends:
-    //   #access_token=...&type=recovery
-    // to the URL. We must detect this FIRST before calling getSession(),
-    // because getSession() would otherwise establish a full authenticated
-    // session, letting the user bypass the password reset form entirely.
+    // Detect recovery OR invite session from URL hash BEFORE getSession()
+    // Both types must not establish a full session until password is set.
     const hashParams = new URLSearchParams(
       window.location.hash.replace('#', '?')
     );
-    const isRecoveryFromUrl = hashParams.get('type') === 'recovery';
+    const urlType = hashParams.get('type');
+    const isSpecialSession = urlType === 'recovery' || urlType === 'invite';
 
-    if (isRecoveryFromUrl) {
-      // Mark as recovery immediately — don't fetch profile or set full session.
-      // The onAuthStateChange PASSWORD_RECOVERY event will fire shortly after
-      // and provide the session needed for supabase.auth.updateUser() to work.
+    if (isSpecialSession) {
+      // Mark immediately — don't fetch profile or set full session.
+      // onAuthStateChange will fire PASSWORD_RECOVERY or SIGNED_IN shortly
+      // and provide the session needed for updateUser() to work.
+      isRecoveryRef.current = true;
       setIsRecoverySession(true);
       setLoading(false);
-      // Don't call getSession() — fall through to onAuthStateChange only
     } else {
-      // Normal startup: check for existing session and load profile
       supabase.auth.getSession().then(async ({ data: { session: initialSession } }) => {
         if (!mountedRef.current) return;
         setSession(initialSession);
@@ -113,21 +108,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (!mountedRef.current) return;
 
       if (event === 'PASSWORD_RECOVERY') {
-        // Recovery token exchanged — session exists for updateUser() only.
-        // Do NOT fetch profile or allow navigation to protected routes.
+        // Password reset link clicked — session for updateUser() only
+        isRecoveryRef.current = true;
         setIsRecoverySession(true);
         setSession(newSession);
         setUser(newSession?.user ?? null);
-        // Profile deliberately not fetched — user has not logged in normally
+        setLoading(false);
+        return;
+      }
+
+      if (event === 'SIGNED_IN' && isRecoveryRef.current) {
+        // Invite link clicked — session established, fetch profile so
+        // ChangePasswordPage can read profile.id and profile.full_name
+        setSession(newSession);
+        setUser(newSession?.user ?? null);
+        if (newSession?.user) fetchProfile(newSession.user.id);
         setLoading(false);
         return;
       }
 
       if (event === 'USER_UPDATED') {
-        // Password was just changed via updateUser().
-        // Sign out completely so user must log in fresh with new password.
-        // This prevents the recovery session from becoming a full session.
-        if (mountedRef.current) {
+        // Password changed via updateUser().
+        // For recovery: clear session — user must log in fresh.
+        // For invite: ChangePasswordPage handles signOut manually, don't clear here.
+        if (mountedRef.current && isRecoveryRef.current && urlType === 'recovery') {
+          isRecoveryRef.current = false;
           setIsRecoverySession(false);
           setSession(null);
           setUser(null);
@@ -137,7 +142,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      // All other events (SIGNED_IN from normal login, SIGNED_OUT, TOKEN_REFRESHED)
+      // Normal events: SIGNED_IN (normal login), SIGNED_OUT, TOKEN_REFRESHED
+      isRecoveryRef.current = false;
       setIsRecoverySession(false);
       setSession(newSession);
       setUser(newSession?.user ?? null);
@@ -171,6 +177,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setProfileError(false);
     setMustChangePassword(false);
     setIsRecoverySession(false);
+    isRecoveryRef.current = false;
   }
 
   return (
