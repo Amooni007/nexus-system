@@ -710,7 +710,7 @@ export default function PublicTicketPage() {
         eventTime:        new Date(event.date).toLocaleTimeString('en-KE', { hour: '2-digit', minute: '2-digit' }),
         eventLocation:    event.location,
         ticketId:         ticket.ticket_token,
-        templateImageUrl: null,
+        templateImageUrl: undefined,
         eventId:          order!.event_id,
       });
     } catch (e) {
