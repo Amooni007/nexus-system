@@ -94,49 +94,6 @@ export async function confirmOrderAndGenerateTickets(
   return (tickets || []) as Ticket[];
 }
 
-// ─── QR Validation ────────────────────────────────────────────────────────────
-export async function validateTicketQR(
-  token: string,
-  scannedEventId: string,
-  scannedById: string
-): Promise<TicketScanResult> {
-  const { data: ticket, error } = await supabase
-    .from('tickets')
-    .select('*, order:ticket_orders(payment_status)')
-    .eq('ticket_token', token)
-    .maybeSingle();
-
-  if (error || !ticket) return { valid: false, status: 'invalid', color: 'red' };
-  if (ticket.event_id !== scannedEventId) return { valid: false, status: 'wrong_event', color: 'red' };
-
-  const order = Array.isArray(ticket.order) ? ticket.order[0] : ticket.order;
-  if (!order || order.payment_status !== 'confirmed') return { valid: false, status: 'invalid', color: 'red' };
-  if (ticket.status === 'cancelled') return { valid: false, status: 'cancelled', color: 'red' };
-
-  if (ticket.status === 'used') {
-    return {
-      valid: false, status: 'already_used', color: 'yellow',
-      customer_name: ticket.customer_name,
-      ticket_category: ticket.ticket_category,
-      scanned_at: ticket.scanned_at,
-    };
-  }
-
-  const now = new Date().toISOString();
-  await supabase
-    .from('tickets')
-    .update({ status: 'used', scanned_at: now, scanned_by: scannedById })
-    .eq('id', ticket.id);
-
-  return {
-    valid: true, status: 'accepted', color: 'green',
-    customer_name: ticket.customer_name,
-    ticket_category: ticket.ticket_category,
-    scanned_at: now,
-    ticket: { ...ticket, status: 'used', scanned_at: now },
-  };
-}
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 export async function generateTicketQRDataURL(ticketToken: string): Promise<string> {
   return generateQRDataURL(`NEXUS-TICKET:${ticketToken}`);
