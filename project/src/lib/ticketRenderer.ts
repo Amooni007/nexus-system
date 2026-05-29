@@ -24,18 +24,30 @@ function rrect(ctx:CanvasRenderingContext2D,x:number,y:number,w:number,h:number,
   ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();
 }
 
+//function loadImg(src:string):Promise<HTMLImageElement|null>{
+ // return new Promise(r=>{
+ //   const i=new Image();
+ //   i.crossOrigin='anonymous';
+ //   i.onload=()=>r(i);
+ //   i.onerror=()=>{
+      // Retry without crossOrigin for public buckets
+ //     const i2=new Image();
+ //     i2.onload=()=>r(i2);
+  //    i2.onerror=()=>r(null);
+  //    i2.src=src;
+  //  };
+  //  i.src=src;
+ // });
+// } 
+
 function loadImg(src:string):Promise<HTMLImageElement|null>{
   return new Promise(r=>{
     const i=new Image();
-    i.crossOrigin='anonymous';
+    // No crossOrigin for public Supabase Storage URLs.
+    // crossOrigin on public bucket images causes CORS preflight failures
+    // which taint the canvas and break toDataURL() on some browsers.
     i.onload=()=>r(i);
-    i.onerror=()=>{
-      // Retry without crossOrigin for public buckets
-      const i2=new Image();
-      i2.onload=()=>r(i2);
-      i2.onerror=()=>r(null);
-      i2.src=src;
-    };
+    i.onerror=()=>r(null);
     i.src=src;
   });
 }
