@@ -40,16 +40,27 @@ function rrect(ctx:CanvasRenderingContext2D,x:number,y:number,w:number,h:number,
  // });
 // } 
 
-function loadImg(src:string):Promise<HTMLImageElement|null>{
-  return new Promise(r=>{
-    const i=new Image();
-    // No crossOrigin for public Supabase Storage URLs.
-    // crossOrigin on public bucket images causes CORS preflight failures
-    // which taint the canvas and break toDataURL() on some browsers.
-    i.onload=()=>r(i);
-    i.onerror=()=>r(null);
-    i.src=src;
-  });
+async function loadImg(src: string): Promise<HTMLImageElement | null> {
+  try {
+    // Fetch via Supabase Storage to avoid CORS taint on canvas
+    const resp = await fetch(src);
+    if (!resp.ok) return null;
+    const blob = await resp.blob();
+    const dataUrl = await new Promise<string>((res, rej) => {
+      const reader = new FileReader();
+      reader.onload = () => res(reader.result as string);
+      reader.onerror = rej;
+      reader.readAsDataURL(blob);
+    });
+    return new Promise(r => {
+      const i = new Image();
+      i.onload = () => r(i);
+      i.onerror = () => r(null);
+      i.src = dataUrl;
+    });
+  } catch {
+    return null;
+  }
 }
 
 export async function getLayout(eventId:string,cat:string):Promise<TicketLayoutConfig>{
