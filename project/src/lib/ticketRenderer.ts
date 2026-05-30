@@ -137,7 +137,13 @@ export async function renderTicketToCanvas(canvas:HTMLCanvasElement,p:TicketRend
 
 export async function downloadTicketAsPNG(p:TicketRenderParams,filename?:string){
   const c=document.createElement('canvas');await renderTicketToCanvas(c,p);
-  const a=document.createElement('a');a.href=c.toDataURL('image/png',1.0);a.download=filename||`ticket-${p.ticketId}.png`;a.click();
+  const url=c.toDataURL('image/png',1.0);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download=filename||`ticket-${p.ticketId}.png`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
 }
 
 export async function ticketToDataURL(p:TicketRenderParams):Promise<string>{
