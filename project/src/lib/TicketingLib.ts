@@ -8,7 +8,7 @@ import type {
 // ─── Public: fetch event info (works for open OR locked events for ticket page)
 export async function getPublicEventInfo(eventId: string): Promise<PublicEventInfo | null> {
   const { data, error } = await supabase
-    .from('events')
+    .from('public_events')
     .select('id, name, date, location, description, is_paid, payment_mode, allow_stk_push, allow_manual, host_paybill, host_till, business_name, payment_timeout, account_format, ticket_categories, status')
     .eq('id', eventId)
     .eq('is_paid', true)          // must be a paid event
@@ -24,17 +24,11 @@ export async function getPublicEventInfo(eventId: string): Promise<PublicEventIn
 
 // ─── Public: get sold ticket counts per category ──────────────────────────────
 export async function getCategoryAvailability(eventId: string): Promise<Record<string, number>> {
-  const { data } = await supabase
-    .from('tickets')
-    .select('ticket_category')
-    .eq('event_id', eventId)
-    .neq('status', 'cancelled');
-
-  const counts: Record<string, number> = {};
-  (data || []).forEach((t: { ticket_category: string }) => {
-    counts[t.ticket_category] = (counts[t.ticket_category] || 0) + 1;
+  const { data, error } = await supabase.rpc('get_category_availability', {
+    p_event_id: eventId,
   });
-  return counts;
+  if (error || !data) return {};
+  return data as Record<string, number>;
 }
 
 // ─── Public: create an order with full security validation ────────────────────

@@ -255,11 +255,27 @@ export default function ScannerPage() {
         return;
       }
 
-      const { data: sr, error: rpcErr } = await supabase.rpc('process_ticket_qr_scan', {
-        p_token:    code,
-        p_event_id: selectedEventId,
-        p_staff_id: profile!.id,
-      });
+      let sr: any = null;
+      let rpcErr: any = null;
+      try {
+        const rpcTimeout = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('timeout')), 8000));
+        const rpcResult = await Promise.race([
+          supabase.rpc('process_ticket_qr_scan', {
+            p_token:    code,
+            p_event_id: selectedEventId,
+            p_staff_id: profile!.id,
+          }),
+          rpcTimeout,
+        ]) as any;
+        sr = rpcResult.data;
+        rpcErr = rpcResult.error;
+      } catch {
+        setResult({ state: 'error', type: 'ticket', title: 'Scan Error', message: 'Timed out — try again.' });
+        addToast('invalid', '❌ Scan Error', 'Request timed out', undefined, undefined, 'ticket');
+        isProcessingRef.current = false;
+        return;
+      }
 
       if (rpcErr || !sr) {
         setResult({ state: 'error', type: 'ticket', title: 'Scan Error', message: 'Failed to validate ticket. Try again.' });
@@ -313,18 +329,34 @@ export default function ScannerPage() {
 
     // Uses process_guest_qr_scan RPC with FOR UPDATE row locking.
     // Database decides validity atomically. Browser only displays result.
-    const { data: gsr, error: gsrErr } = await supabase.rpc('process_guest_qr_scan', {
-      p_qr_code:  code,
-      p_staff_id: profile!.id,
-      p_event_id: selectedEventId,
-    });
+    let gsr: any = null;
+      let gsrErr: any = null;
+      try {
+        const gstTimeout = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('timeout')), 8000));
+        const gsrResult = await Promise.race([
+          supabase.rpc('process_guest_qr_scan', {
+            p_qr_code:  code,
+            p_staff_id: profile!.id,
+            p_event_id: selectedEventId,
+          }),
+          gstTimeout,
+        ]) as any;
+        gsr = gsrResult.data;
+        gsrErr = gsrResult.error;
+      } catch {
+        setResult({ state: 'error', type: 'guest', title: 'Scan Error', message: 'Timed out — try again.' });
+        addToast('invalid', '❌ Scan Error', 'Request timed out', undefined, undefined, 'guest');
+        isProcessingRef.current = false;
+        return;
+      }
 
-    if (gsrErr || !gsr) {
-      setResult({ state: 'error', type: 'guest', title: 'Scan Error', message: 'Failed to validate QR. Try again.' });
-      addToast('invalid', '❌ Scan Error', 'Validation failed', undefined, undefined, 'guest');
-      isProcessingRef.current = false;
-      return;
-    }
+      if (gsrErr || !gsr) {
+        setResult({ state: 'error', type: 'guest', title: 'Scan Error', message: 'Failed to validate QR. Try again.' });
+        addToast('invalid', '❌ Scan Error', 'Validation failed', undefined, undefined, 'guest');
+        isProcessingRef.current = false;
+        return;
+      }
 
     let state: ScanState;
     let title: string;
